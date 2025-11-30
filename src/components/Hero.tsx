@@ -1,8 +1,11 @@
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Smartphone, Zap, DollarSign, Download } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 const Hero = () => {
+  const navigate = useNavigate();
+
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden px-4 py-20">
       {/* Background glow effect */}
@@ -67,7 +70,11 @@ const Hero = () => {
         </div>
 
         {/* Install app link */}
-        <Button variant="ghost" className="text-muted-foreground hover:text-foreground">
+        <Button 
+          variant="ghost" 
+          className="text-muted-foreground hover:text-foreground"
+          onClick={() => navigate('/install')}
+        >
           <Download className="w-4 h-4 mr-2" />
           Install App
         </Button>
