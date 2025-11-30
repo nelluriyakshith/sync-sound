@@ -57,15 +57,27 @@ const Install = () => {
         {/* Header */}
         <div className="text-center mb-12">
           <div className="mb-6 flex justify-center">
-            <div className="p-4 rounded-2xl bg-card/50 backdrop-blur-sm border border-border">
-              <Download className="w-12 h-12 text-primary" />
-            </div>
+            {deferredPrompt && !isInstalled ? (
+              <button
+                onClick={handleInstallClick}
+                className="group p-8 rounded-3xl bg-gradient-to-br from-primary/20 to-accent/20 backdrop-blur-sm border-2 border-primary hover:border-accent transition-all duration-300 hover:scale-110 hover:shadow-2xl hover:shadow-primary/50 cursor-pointer"
+                aria-label="Install App"
+              >
+                <Download className="w-16 h-16 text-primary group-hover:text-accent transition-colors animate-pulse" />
+              </button>
+            ) : (
+              <div className="p-4 rounded-2xl bg-card/50 backdrop-blur-sm border border-border">
+                <Download className="w-12 h-12 text-primary" />
+              </div>
+            )}
           </div>
           <h1 className="text-4xl md:text-5xl font-bold mb-4 gradient-text">
             Install Sync Sound
           </h1>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-            Install our app for the best experience. Works offline and loads instantly from your home screen.
+            {deferredPrompt && !isInstalled 
+              ? "Click the icon above to install the app instantly!" 
+              : "Install our app for the best experience. Works offline and loads instantly from your home screen."}
           </p>
         </div>
 
