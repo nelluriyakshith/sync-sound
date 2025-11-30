@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Smartphone, Zap, DollarSign, Download } from "lucide-react";
@@ -5,6 +6,30 @@ import { useNavigate } from "react-router-dom";
 
 const Hero = () => {
   const navigate = useNavigate();
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+
+  useEffect(() => {
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      setDeferredPrompt(null);
+    } else {
+      navigate('/install');
+    }
+  };
 
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden px-4 py-20">
@@ -72,11 +97,11 @@ const Hero = () => {
         {/* Install app link */}
         <Button 
           variant="ghost" 
-          className="text-muted-foreground hover:text-foreground"
-          onClick={() => navigate('/install')}
+          className="text-muted-foreground hover:text-foreground transition-all hover:scale-105"
+          onClick={handleInstallClick}
         >
           <Download className="w-4 h-4 mr-2" />
-          Install App
+          {deferredPrompt ? "Install App Now" : "Install App"}
         </Button>
 
         {/* Bottom tagline */}
