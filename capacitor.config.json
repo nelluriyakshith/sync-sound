@@ -1,0 +1,9 @@
+{
+  "appId": "app.lovable.16b43d655eaa4df1a8217f3e6c1863b7",
+  "appName": "Sync Sound",
+  "webDir": "dist",
+  "server": {
+    "url": "https://16b43d65-5eaa-4df1-a821-7f3e6c1863b7.lovableproject.com?forceHideBadge=true",
+    "cleartext": true
+  }
+}
