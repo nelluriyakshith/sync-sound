@@ -86,10 +86,10 @@ const Hero = () => {
 
         {/* CTA Buttons */}
         <div className="flex flex-col sm:flex-row gap-4 justify-center mb-8">
-          <Button size="lg" className="text-lg px-8 py-6 bg-gradient-to-r from-primary via-[hsl(var(--gradient-via))] to-accent hover:opacity-90 transition-opacity">
+          <Button size="lg" className="text-lg px-8 py-6 bg-gradient-to-r from-primary via-[hsl(var(--gradient-via))] to-accent hover:opacity-90 transition-opacity" onClick={() => navigate('/room')}>
             Create Room
           </Button>
-          <Button size="lg" variant="outline" className="text-lg px-8 py-6 border-2">
+          <Button size="lg" variant="outline" className="text-lg px-8 py-6 border-2" onClick={() => navigate('/room')}>
             Join Room
           </Button>
         </div>
