@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Settings, User, Volume2, Wifi, Palette, Info } from "lucide-react";
@@ -14,40 +13,38 @@ const SettingsPage = () => {
 
   return (
     <div className="min-h-screen pt-20 px-4 pb-12">
-      <div className="container max-w-lg mx-auto space-y-6">
+      <div className="container max-w-lg mx-auto space-y-5">
         <div className="text-center mb-8">
           <div className="mb-4 flex justify-center">
-            <div className="p-4 rounded-2xl bg-primary/10">
+            <div className="p-4 rounded-2xl glass-card glow-border">
               <Settings className="w-10 h-10 text-primary" />
             </div>
           </div>
-          <h1 className="text-3xl font-bold mb-2">Settings</h1>
+          <h1 className="text-3xl font-bold mb-2 font-display">Settings</h1>
           <p className="text-muted-foreground">Customize your Sync Sound experience</p>
         </div>
 
-        {/* Profile */}
-        <Card className="bg-card/50 backdrop-blur-sm border-border">
+        <Card className="glass-card">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
+            <CardTitle className="flex items-center gap-2 text-lg font-display">
               <User className="w-5 h-5 text-primary" /> Device Profile
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
               <label className="text-sm text-muted-foreground mb-1 block">Device Nickname</label>
-              <Input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="My Device" />
+              <Input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="My Device" className="bg-secondary/50" />
             </div>
           </CardContent>
         </Card>
 
-        {/* Audio */}
-        <Card className="bg-card/50 backdrop-blur-sm border-border">
+        <Card className="glass-card">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Volume2 className="w-5 h-5 text-primary" /> Audio
+            <CardTitle className="flex items-center gap-2 text-lg font-display">
+              <Volume2 className="w-5 h-5 text-accent" /> Audio
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent>
             <div className="flex items-center justify-between">
               <div>
                 <p className="font-medium">High Quality Audio</p>
@@ -58,10 +55,9 @@ const SettingsPage = () => {
           </CardContent>
         </Card>
 
-        {/* Connection */}
-        <Card className="bg-card/50 backdrop-blur-sm border-border">
+        <Card className="glass-card">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
+            <CardTitle className="flex items-center gap-2 text-lg font-display">
               <Wifi className="w-5 h-5 text-primary" /> Connection
             </CardTitle>
           </CardHeader>
@@ -83,11 +79,10 @@ const SettingsPage = () => {
           </CardContent>
         </Card>
 
-        {/* Appearance */}
-        <Card className="bg-card/50 backdrop-blur-sm border-border">
+        <Card className="glass-card">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Palette className="w-5 h-5 text-primary" /> Appearance
+            <CardTitle className="flex items-center gap-2 text-lg font-display">
+              <Palette className="w-5 h-5 text-accent" /> Appearance
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -101,10 +96,9 @@ const SettingsPage = () => {
           </CardContent>
         </Card>
 
-        {/* About */}
-        <Card className="bg-card/50 backdrop-blur-sm border-border">
+        <Card className="glass-card">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
+            <CardTitle className="flex items-center gap-2 text-lg font-display">
               <Info className="w-5 h-5 text-primary" /> About
             </CardTitle>
           </CardHeader>
