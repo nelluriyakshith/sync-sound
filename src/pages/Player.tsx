@@ -4,19 +4,22 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
-  Users, Copy, ArrowLeft, Wifi, Upload, Music, ListMusic, X, CheckCircle2
+  Users, Copy, ArrowLeft, Wifi, Upload, Music, ListMusic, X, CheckCircle2, Youtube
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import Logo from "@/components/Logo";
+import YouTubePlayer from "@/components/player/YouTubePlayer";
+import YouTubeEmbed from "@/components/player/YouTubeEmbed";
 
 /* ─── types ─────────────────────────────────────── */
 interface Track {
   id: string;
   name: string;
   artist: string;
-  duration: number; // seconds
+  duration: number;
   url: string;
   isLocal: boolean;
+  youtubeId?: string;
 }
 
 interface Device {
@@ -49,15 +52,18 @@ const Player = () => {
   /* playback state */
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [progress, setProgress] = useState(0); // 0-100
+  const [progress, setProgress] = useState(0);
   const [currentSec, setCurrentSec] = useState(0);
+  const [totalDuration, setTotalDuration] = useState(0);
   const [volume, setVolume] = useState([80]);
   const [isMuted, setIsMuted] = useState(false);
   const [currentTrackIndex, setCurrentTrackIndex] = useState(0);
+  const [ytSeekTo, setYtSeekTo] = useState<number | null>(null);
 
   /* queue */
   const [queue, setQueue] = useState<Track[]>([]);
   const [showQueue, setShowQueue] = useState(false);
+  const [showYoutube, setShowYoutube] = useState(false);
 
   /* devices */
   const [devices, setDevices] = useState<Device[]>([
@@ -66,6 +72,7 @@ const Player = () => {
   const [showDevices, setShowDevices] = useState(false);
 
   const currentTrack = queue[currentTrackIndex] ?? null;
+  const isYouTube = !!currentTrack?.youtubeId;
 
   /* ── simulate devices joining ── */
   useEffect(() => {
@@ -78,15 +85,16 @@ const Player = () => {
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, []);
 
-  /* ── audio element sync ── */
+  /* ── audio element sync (local tracks only) ── */
   useEffect(() => {
-    if (!currentTrack) return;
+    if (!currentTrack || isYouTube) return;
     const audio = new Audio(currentTrack.url);
     audio.volume = isMuted ? 0 : volume[0] / 100;
     audioRef.current = audio;
 
     const onTimeUpdate = () => {
       setCurrentSec(audio.currentTime);
+      setTotalDuration(audio.duration || 0);
       setProgress((audio.currentTime / audio.duration) * 100 || 0);
     };
     const onEnded = () => handleNext();
@@ -105,38 +113,57 @@ const Player = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrack?.id]);
 
-  /* ── volume ── */
+  /* ── volume (local) ── */
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = isMuted ? 0 : volume[0] / 100;
   }, [volume, isMuted]);
 
-  /* ── play/pause ── */
+  /* ── play/pause (local) ── */
   useEffect(() => {
-    if (!audioRef.current) return;
+    if (!audioRef.current || isYouTube) return;
     isPlaying ? audioRef.current.play().catch(() => {}) : audioRef.current.pause();
-  }, [isPlaying]);
+  }, [isPlaying, isYouTube]);
 
   const handlePlayPause = () => setIsPlaying(p => !p);
 
   const handleNext = useCallback(() => {
     setProgress(0);
     setCurrentSec(0);
+    setTotalDuration(0);
     setCurrentTrackIndex(i => (i + 1) % Math.max(queue.length, 1));
   }, [queue.length]);
 
   const handlePrev = useCallback(() => {
     setProgress(0);
     setCurrentSec(0);
+    setTotalDuration(0);
     setCurrentTrackIndex(i => (i - 1 + Math.max(queue.length, 1)) % Math.max(queue.length, 1));
   }, [queue.length]);
 
   const handleSeek = (v: number[]) => {
-    if (!audioRef.current || !currentTrack) return;
-    const t = (v[0] / 100) * audioRef.current.duration;
-    audioRef.current.currentTime = t;
-    setProgress(v[0]);
-    setCurrentSec(t);
+    if (isYouTube && totalDuration) {
+      const t = (v[0] / 100) * totalDuration;
+      setYtSeekTo(t);
+      setProgress(v[0]);
+      setCurrentSec(t);
+    } else if (audioRef.current && currentTrack) {
+      const t = (v[0] / 100) * audioRef.current.duration;
+      audioRef.current.currentTime = t;
+      setProgress(v[0]);
+      setCurrentSec(t);
+    }
   };
+
+  /* ── YouTube callbacks ── */
+  const handleYtTimeUpdate = useCallback((ct: number, dur: number) => {
+    setCurrentSec(ct);
+    setTotalDuration(dur);
+    setProgress(dur ? (ct / dur) * 100 : 0);
+  }, []);
+
+  const handleYtReady = useCallback((dur: number) => {
+    setTotalDuration(dur);
+  }, []);
 
   /* ── local file upload ── */
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -172,6 +199,23 @@ const Player = () => {
 
     toast({ title: `${newTracks.length} track${newTracks.length > 1 ? "s" : ""} added`, description: "Added to queue" });
     e.target.value = "";
+  };
+
+  /* ── YouTube track add ── */
+  const handleYoutubeAdd = (track: { id: string; name: string; artist: string; url: string; youtubeId: string }) => {
+    const newTrack: Track = {
+      ...track,
+      duration: 0,
+      isLocal: false,
+    };
+    setQueue(q => {
+      const merged = [...q, newTrack];
+      if (q.length === 0) {
+        setCurrentTrackIndex(0);
+        setIsPlaying(true);
+      }
+      return merged;
+    });
   };
 
   const handleCopyCode = () => {
@@ -211,38 +255,65 @@ const Player = () => {
 
       <div className="container max-w-2xl mx-auto px-4 pt-6 space-y-4">
 
-        {/* ── Album art / now playing ── */}
+        {/* ── Album art / now playing / YouTube embed ── */}
         <div className="glass-card rounded-2xl overflow-hidden glow-border">
-          {/* Art */}
-          <div className="relative bg-gradient-to-br from-[hsl(var(--gradient-from)/0.3)] via-secondary to-[hsl(var(--gradient-to)/0.2)] aspect-square max-h-72 flex items-center justify-center">
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,hsl(var(--primary)/0.15)_0%,transparent_70%)]" />
-            {currentTrack ? (
-              <div className="relative z-10 text-center space-y-3 p-8">
-                <div className="w-28 h-28 mx-auto rounded-full glass-card flex items-center justify-center glow-border">
-                  <Music className="w-12 h-12 text-primary" />
-                </div>
-                <div>
-                  <h2 className="text-xl font-bold font-display truncate max-w-xs">{currentTrack.name}</h2>
-                  <p className="text-sm text-muted-foreground">{currentTrack.artist}</p>
-                </div>
-                {currentTrack.isLocal && (
-                  <span className="inline-flex items-center gap-1 text-xs bg-primary/20 text-primary rounded-full px-2.5 py-1">
-                    <CheckCircle2 className="w-3 h-3" /> Offline
-                  </span>
-                )}
+          {/* Art / Video */}
+          {isYouTube && currentTrack?.youtubeId ? (
+            <div className="relative">
+              <YouTubeEmbed
+                videoId={currentTrack.youtubeId}
+                isPlaying={isPlaying}
+                volume={volume[0]}
+                isMuted={isMuted}
+                onTimeUpdate={handleYtTimeUpdate}
+                onEnded={handleNext}
+                onReady={handleYtReady}
+                seekTo={ytSeekTo}
+              />
+              <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-black/60 backdrop-blur-sm rounded-full px-2.5 py-1">
+                <Youtube className="w-3.5 h-3.5 text-red-500" />
+                <span className="text-[10px] text-white font-medium">YouTube</span>
               </div>
-            ) : (
-              <div className="relative z-10 text-center space-y-4 p-8">
-                <div className="w-28 h-28 mx-auto rounded-full glass-card flex items-center justify-center glow-border">
-                  <Logo size={56} />
+            </div>
+          ) : (
+            <div className="relative bg-gradient-to-br from-[hsl(var(--gradient-from)/0.3)] via-secondary to-[hsl(var(--gradient-to)/0.2)] aspect-square max-h-72 flex items-center justify-center">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,hsl(var(--primary)/0.15)_0%,transparent_70%)]" />
+              {currentTrack ? (
+                <div className="relative z-10 text-center space-y-3 p-8">
+                  <div className="w-28 h-28 mx-auto rounded-full glass-card flex items-center justify-center glow-border">
+                    <Music className="w-12 h-12 text-primary" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold font-display truncate max-w-xs">{currentTrack.name}</h2>
+                    <p className="text-sm text-muted-foreground">{currentTrack.artist}</p>
+                  </div>
+                  {currentTrack.isLocal && (
+                    <span className="inline-flex items-center gap-1 text-xs bg-primary/20 text-primary rounded-full px-2.5 py-1">
+                      <CheckCircle2 className="w-3 h-3" /> Offline
+                    </span>
+                  )}
                 </div>
-                <div>
-                  <p className="text-lg font-semibold font-display">No track loaded</p>
-                  <p className="text-sm text-muted-foreground">Upload local files to start listening</p>
+              ) : (
+                <div className="relative z-10 text-center space-y-4 p-8">
+                  <div className="w-28 h-28 mx-auto rounded-full glass-card flex items-center justify-center glow-border">
+                    <Logo size={56} />
+                  </div>
+                  <div>
+                    <p className="text-lg font-semibold font-display">No track loaded</p>
+                    <p className="text-sm text-muted-foreground">Upload files or add YouTube links</p>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
+
+          {/* Track info below YouTube */}
+          {isYouTube && currentTrack && (
+            <div className="px-5 pt-3 pb-1">
+              <h2 className="text-base font-bold font-display truncate">{currentTrack.name}</h2>
+              <p className="text-xs text-muted-foreground truncate">{currentTrack.artist}</p>
+            </div>
+          )}
 
           {/* Controls */}
           <div className="p-5 space-y-4">
@@ -258,7 +329,7 @@ const Player = () => {
               />
               <div className="flex justify-between text-xs text-muted-foreground font-mono">
                 <span>{formatTime(currentSec)}</span>
-                <span>{currentTrack ? formatTime(audioRef.current?.duration ?? 0) : "0:00"}</span>
+                <span>{formatTime(totalDuration)}</span>
               </div>
             </div>
 
@@ -295,48 +366,59 @@ const Player = () => {
           </div>
         </div>
 
-        {/* ── Row: Upload + Devices + Queue ── */}
-        <div className="grid grid-cols-3 gap-3">
+        {/* ── Row: Upload + YouTube + Devices + Queue ── */}
+        <div className="grid grid-cols-4 gap-2">
           {/* Upload */}
-          <label className="glass-card rounded-xl p-4 flex flex-col items-center gap-2 cursor-pointer border border-border/50 hover:border-primary/40 transition-colors group">
-            <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-              <Upload className="w-5 h-5 text-primary" />
+          <label className="glass-card rounded-xl p-3 flex flex-col items-center gap-1.5 cursor-pointer border border-border/50 hover:border-primary/40 transition-colors group">
+            <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
+              <Upload className="w-4 h-4 text-primary" />
             </div>
-            <span className="text-xs font-medium text-center">Add Music</span>
-            <span className="text-[10px] text-muted-foreground text-center">Local files</span>
+            <span className="text-[10px] font-medium text-center">Local</span>
             <input type="file" accept="audio/*" multiple className="hidden" onChange={handleFileUpload} />
           </label>
 
+          {/* YouTube */}
+          <button
+            onClick={() => { setShowYoutube(y => !y); setShowDevices(false); setShowQueue(false); }}
+            className={`glass-card rounded-xl p-3 flex flex-col items-center gap-1.5 border transition-colors ${showYoutube ? "border-red-500/50 glow-border" : "border-border/50 hover:border-red-500/40"}`}
+          >
+            <div className="w-9 h-9 rounded-full bg-red-500/10 flex items-center justify-center">
+              <Youtube className="w-4 h-4 text-red-500" />
+            </div>
+            <span className="text-[10px] font-medium">YouTube</span>
+          </button>
+
           {/* Devices */}
           <button
-            onClick={() => { setShowDevices(d => !d); setShowQueue(false); }}
-            className={`glass-card rounded-xl p-4 flex flex-col items-center gap-2 border transition-colors ${showDevices ? "border-primary/50 glow-border" : "border-border/50 hover:border-primary/40"}`}
+            onClick={() => { setShowDevices(d => !d); setShowQueue(false); setShowYoutube(false); }}
+            className={`glass-card rounded-xl p-3 flex flex-col items-center gap-1.5 border transition-colors ${showDevices ? "border-primary/50 glow-border" : "border-border/50 hover:border-primary/40"}`}
           >
-            <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center relative">
-              <Users className="w-5 h-5 text-primary" />
+            <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center relative">
+              <Users className="w-4 h-4 text-primary" />
               <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[9px] font-bold flex items-center justify-center">
                 {devices.length}
               </span>
             </div>
-            <span className="text-xs font-medium">Devices</span>
-            <span className="text-[10px] text-muted-foreground">{devices.length} connected</span>
+            <span className="text-[10px] font-medium">{devices.length} online</span>
           </button>
 
           {/* Queue */}
           <button
-            onClick={() => { setShowQueue(q => !q); setShowDevices(false); }}
-            className={`glass-card rounded-xl p-4 flex flex-col items-center gap-2 border transition-colors ${showQueue ? "border-primary/50 glow-border" : "border-border/50 hover:border-primary/40"}`}
+            onClick={() => { setShowQueue(q => !q); setShowDevices(false); setShowYoutube(false); }}
+            className={`glass-card rounded-xl p-3 flex flex-col items-center gap-1.5 border transition-colors ${showQueue ? "border-primary/50 glow-border" : "border-border/50 hover:border-primary/40"}`}
           >
-            <div className="w-10 h-10 rounded-full bg-accent/10 flex items-center justify-center relative">
-              <ListMusic className="w-5 h-5 text-accent" />
+            <div className="w-9 h-9 rounded-full bg-accent/10 flex items-center justify-center relative">
+              <ListMusic className="w-4 h-4 text-accent" />
               <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-accent text-accent-foreground text-[9px] font-bold flex items-center justify-center">
                 {queue.length}
               </span>
             </div>
-            <span className="text-xs font-medium">Queue</span>
-            <span className="text-[10px] text-muted-foreground">{queue.length} tracks</span>
+            <span className="text-[10px] font-medium">{queue.length} tracks</span>
           </button>
         </div>
+
+        {/* ── YouTube panel ── */}
+        {showYoutube && <YouTubePlayer onTrackAdd={handleYoutubeAdd} />}
 
         {/* ── Devices panel ── */}
         {showDevices && (
@@ -378,21 +460,21 @@ const Player = () => {
                 <ListMusic className="w-4 h-4 text-accent" /> Queue
               </h3>
               {queue.length === 0 && (
-                <span className="text-xs text-muted-foreground">Upload files to add tracks</span>
+                <span className="text-xs text-muted-foreground">Add tracks to get started</span>
               )}
             </div>
             {queue.length === 0 ? (
               <div className="py-10 text-center">
                 <Music className="w-10 h-10 text-muted-foreground/30 mx-auto mb-2" />
                 <p className="text-sm text-muted-foreground">No tracks yet</p>
-                <p className="text-xs text-muted-foreground/60 mt-1">Tap "Add Music" to load local files</p>
+                <p className="text-xs text-muted-foreground/60 mt-1">Add local files or YouTube links</p>
               </div>
             ) : (
               <div className="divide-y divide-border/30 max-h-72 overflow-y-auto">
                 {queue.map((track, idx) => (
                   <div
                     key={track.id}
-                    onClick={() => { setCurrentTrackIndex(idx); setIsPlaying(true); setProgress(0); setCurrentSec(0); }}
+                    onClick={() => { setCurrentTrackIndex(idx); setIsPlaying(true); setProgress(0); setCurrentSec(0); setTotalDuration(0); }}
                     className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
                       idx === currentTrackIndex ? "bg-primary/10" : "hover:bg-secondary/40"
                     }`}
@@ -404,6 +486,8 @@ const Player = () => {
                             <span key={i} className="w-1 rounded-full bg-primary animate-bounce" style={{ height: `${40 + i * 20}%`, animationDelay: `${i * 0.1}s` }} />
                           ))}
                         </span>
+                      ) : track.youtubeId ? (
+                        <Youtube className="w-3.5 h-3.5 text-red-500" />
                       ) : (
                         <span className="text-xs font-mono text-muted-foreground">{idx + 1}</span>
                       )}
