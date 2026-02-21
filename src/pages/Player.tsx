@@ -4,9 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
-  Users, Copy, ArrowLeft, Wifi, Upload, Music, ListMusic, X, CheckCircle2, Youtube
+  Users, Copy, ArrowLeft, Wifi, Upload, Music, ListMusic, X, CheckCircle2, Youtube,
+  Shield, UserMinus, VolumeOff, Volume1
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/integrations/supabase/client";
 import Logo from "@/components/Logo";
 import YouTubePlayer from "@/components/player/YouTubePlayer";
 import YouTubeEmbed from "@/components/player/YouTubeEmbed";
@@ -22,11 +25,14 @@ interface Track {
   youtubeId?: string;
 }
 
-interface Device {
+interface RoomMember {
   id: string;
-  name: string;
-  joinedAt: number;
-  isHost: boolean;
+  user_id: string;
+  device_name: string;
+  role: string;
+  is_muted: boolean;
+  is_online: boolean;
+  joined_at: string;
 }
 
 /* ─── helpers ───────────────────────────────────── */
@@ -36,18 +42,12 @@ const formatTime = (s: number) => {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 };
 
-const deviceNames = [
-  "Galaxy S24", "iPhone 15 Pro", "Pixel 8", "iPad Air",
-  "OnePlus 12", "MacBook Pro", "Surface Pro", "Redmi Note 13",
-];
-
-const randomName = () => deviceNames[Math.floor(Math.random() * deviceNames.length)];
-
 /* ─── component ─────────────────────────────────── */
 const Player = () => {
   const { roomCode } = useParams<{ roomCode: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
 
   /* playback state */
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -65,25 +65,112 @@ const Player = () => {
   const [showQueue, setShowQueue] = useState(false);
   const [showYoutube, setShowYoutube] = useState(false);
 
-  /* devices */
-  const [devices, setDevices] = useState<Device[]>([
-    { id: "host", name: "This Device", joinedAt: Date.now(), isHost: true },
-  ]);
+  /* room & devices */
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const [members, setMembers] = useState<RoomMember[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [showDevices, setShowDevices] = useState(false);
 
   const currentTrack = queue[currentTrackIndex] ?? null;
   const isYouTube = !!currentTrack?.youtubeId;
+  const onlineMembers = members.filter(m => m.is_online);
 
-  /* ── simulate devices joining ── */
+  /* ── Load room and members ── */
   useEffect(() => {
-    const t1 = setTimeout(() => {
-      setDevices(d => [...d, { id: "d2", name: randomName(), joinedAt: Date.now(), isHost: false }]);
-    }, 3500);
-    const t2 = setTimeout(() => {
-      setDevices(d => [...d, { id: "d3", name: randomName(), joinedAt: Date.now(), isHost: false }]);
-    }, 8000);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, []);
+    if (!roomCode || !user) return;
+
+    const loadRoom = async () => {
+      const { data: room } = await supabase
+        .from("rooms")
+        .select("id, created_by")
+        .eq("code", roomCode)
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (!room) {
+        toast({ title: "Room not found", variant: "destructive" });
+        navigate("/room");
+        return;
+      }
+
+      setRoomId(room.id);
+      setIsAdmin(room.created_by === user.id);
+
+      // Load members
+      const { data: mems } = await supabase
+        .from("room_members")
+        .select("*")
+        .eq("room_id", room.id);
+
+      if (mems) setMembers(mems as RoomMember[]);
+    };
+
+    loadRoom();
+  }, [roomCode, user, navigate, toast]);
+
+  /* ── Real-time subscription for members ── */
+  useEffect(() => {
+    if (!roomId) return;
+
+    const channel = supabase
+      .channel(`room-members-${roomId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "room_members",
+          filter: `room_id=eq.${roomId}`,
+        },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            const newMember = payload.new as RoomMember;
+            setMembers(prev => {
+              if (prev.find(m => m.id === newMember.id)) return prev;
+              return [...prev, newMember];
+            });
+          } else if (payload.eventType === "UPDATE") {
+            const updated = payload.new as RoomMember;
+            setMembers(prev => prev.map(m => m.id === updated.id ? updated : m));
+          } else if (payload.eventType === "DELETE") {
+            const old = payload.old as { id: string };
+            setMembers(prev => prev.filter(m => m.id !== old.id));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [roomId]);
+
+  /* ── Mark offline on unmount ── */
+  useEffect(() => {
+    if (!roomId || !user) return;
+    return () => {
+      supabase
+        .from("room_members")
+        .update({ is_online: false, last_seen: new Date().toISOString() })
+        .eq("room_id", roomId)
+        .eq("user_id", user.id)
+        .then();
+    };
+  }, [roomId, user]);
+
+  /* ── Admin actions ── */
+  const handleKick = async (memberId: string) => {
+    if (!isAdmin) return;
+    const { error } = await supabase.from("room_members").delete().eq("id", memberId);
+    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
+    else toast({ title: "User removed" });
+  };
+
+  const handleToggleMute = async (memberId: string, currentMuted: boolean) => {
+    if (!isAdmin) return;
+    const { error } = await supabase.from("room_members").update({ is_muted: !currentMuted }).eq("id", memberId);
+    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
+  };
 
   /* ── audio element sync (local tracks only) ── */
   useEffect(() => {
@@ -127,95 +214,58 @@ const Player = () => {
   const handlePlayPause = () => setIsPlaying(p => !p);
 
   const handleNext = useCallback(() => {
-    setProgress(0);
-    setCurrentSec(0);
-    setTotalDuration(0);
+    setProgress(0); setCurrentSec(0); setTotalDuration(0);
     setCurrentTrackIndex(i => (i + 1) % Math.max(queue.length, 1));
   }, [queue.length]);
 
   const handlePrev = useCallback(() => {
-    setProgress(0);
-    setCurrentSec(0);
-    setTotalDuration(0);
+    setProgress(0); setCurrentSec(0); setTotalDuration(0);
     setCurrentTrackIndex(i => (i - 1 + Math.max(queue.length, 1)) % Math.max(queue.length, 1));
   }, [queue.length]);
 
   const handleSeek = (v: number[]) => {
     if (isYouTube && totalDuration) {
       const t = (v[0] / 100) * totalDuration;
-      setYtSeekTo(t);
-      setProgress(v[0]);
-      setCurrentSec(t);
+      setYtSeekTo(t); setProgress(v[0]); setCurrentSec(t);
     } else if (audioRef.current && currentTrack) {
       const t = (v[0] / 100) * audioRef.current.duration;
-      audioRef.current.currentTime = t;
-      setProgress(v[0]);
-      setCurrentSec(t);
+      audioRef.current.currentTime = t; setProgress(v[0]); setCurrentSec(t);
     }
   };
 
   /* ── YouTube callbacks ── */
   const handleYtTimeUpdate = useCallback((ct: number, dur: number) => {
-    setCurrentSec(ct);
-    setTotalDuration(dur);
+    setCurrentSec(ct); setTotalDuration(dur);
     setProgress(dur ? (ct / dur) * 100 : 0);
   }, []);
 
-  const handleYtReady = useCallback((dur: number) => {
-    setTotalDuration(dur);
-  }, []);
+  const handleYtReady = useCallback((dur: number) => { setTotalDuration(dur); }, []);
 
   /* ── local file upload ── */
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
-
     const newTracks: Track[] = files
       .filter(f => f.type.startsWith("audio/"))
       .map(f => {
         const url = URL.createObjectURL(f);
         const name = f.name.replace(/\.[^.]+$/, "");
         const parts = name.split(" - ");
-        return {
-          id: `${f.name}-${f.lastModified}`,
-          name: parts[1] ?? name,
-          artist: parts[0] ?? "Unknown Artist",
-          duration: 0,
-          url,
-          isLocal: true,
-        };
+        return { id: `${f.name}-${f.lastModified}`, name: parts[1] ?? name, artist: parts[0] ?? "Unknown Artist", duration: 0, url, isLocal: true };
       });
-
     if (!newTracks.length) {
       toast({ title: "No audio files", description: "Please select valid audio files", variant: "destructive" });
       return;
     }
-
-    setQueue(q => {
-      const merged = [...q, ...newTracks];
-      if (q.length === 0) setCurrentTrackIndex(0);
-      return merged;
-    });
-
-    toast({ title: `${newTracks.length} track${newTracks.length > 1 ? "s" : ""} added`, description: "Added to queue" });
+    setQueue(q => { const merged = [...q, ...newTracks]; if (q.length === 0) setCurrentTrackIndex(0); return merged; });
+    toast({ title: `${newTracks.length} track${newTracks.length > 1 ? "s" : ""} added` });
     e.target.value = "";
   };
 
   /* ── YouTube track add ── */
   const handleYoutubeAdd = (track: { id: string; name: string; artist: string; url: string; youtubeId: string }) => {
-    const newTrack: Track = {
-      ...track,
-      duration: 0,
-      isLocal: false,
-    };
-    setQueue(q => {
-      const merged = [...q, newTrack];
-      if (q.length === 0) {
-        setCurrentTrackIndex(0);
-        setIsPlaying(true);
-      }
-      return merged;
-    });
+    const newTrack: Track = { ...track, duration: 0, isLocal: false };
+    setQueue(q => { const merged = [...q, newTrack]; if (q.length === 0) { setCurrentTrackIndex(0); setIsPlaying(true); } return merged; });
   };
 
   const handleCopyCode = () => {
@@ -242,6 +292,11 @@ const Player = () => {
             <ArrowLeft className="w-4 h-4" /> Back
           </Button>
           <div className="flex items-center gap-2">
+            {isAdmin && (
+              <span className="flex items-center gap-1 text-xs text-accent font-medium">
+                <Shield className="w-3 h-3" /> Admin
+              </span>
+            )}
             <span className="flex items-center gap-1.5 text-xs text-primary font-medium">
               <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
               LIVE
@@ -257,7 +312,6 @@ const Player = () => {
 
         {/* ── Album art / now playing / YouTube embed ── */}
         <div className="glass-card rounded-2xl overflow-hidden glow-border">
-          {/* Art / Video */}
           {isYouTube && currentTrack?.youtubeId ? (
             <div className="relative">
               <YouTubeEmbed
@@ -307,7 +361,6 @@ const Player = () => {
             </div>
           )}
 
-          {/* Track info below YouTube */}
           {isYouTube && currentTrack && (
             <div className="px-5 pt-3 pb-1">
               <h2 className="text-base font-bold font-display truncate">{currentTrack.name}</h2>
@@ -317,58 +370,35 @@ const Player = () => {
 
           {/* Controls */}
           <div className="p-5 space-y-4">
-            {/* Progress */}
             <div className="space-y-1.5">
-              <Slider
-                value={[progress]}
-                onValueChange={handleSeek}
-                max={100}
-                step={0.1}
-                className="cursor-pointer"
-                disabled={!currentTrack}
-              />
+              <Slider value={[progress]} onValueChange={handleSeek} max={100} step={0.1} className="cursor-pointer" disabled={!currentTrack} />
               <div className="flex justify-between text-xs text-muted-foreground font-mono">
                 <span>{formatTime(currentSec)}</span>
                 <span>{formatTime(totalDuration)}</span>
               </div>
             </div>
-
-            {/* Playback buttons */}
             <div className="flex items-center justify-center gap-6">
               <Button variant="ghost" size="icon" onClick={handlePrev} className="text-muted-foreground hover:text-foreground" disabled={!currentTrack}>
                 <SkipBack className="w-5 h-5" />
               </Button>
-              <Button
-                size="icon"
-                disabled={!currentTrack}
-                className="w-16 h-16 rounded-full bg-gradient-to-r from-[hsl(var(--gradient-from))] to-[hsl(var(--gradient-to))] text-primary-foreground shadow-lg shadow-primary/30 hover:opacity-90 hover:scale-105 transition-all"
-                onClick={handlePlayPause}
-              >
+              <Button size="icon" disabled={!currentTrack} className="w-16 h-16 rounded-full bg-gradient-to-r from-[hsl(var(--gradient-from))] to-[hsl(var(--gradient-to))] text-primary-foreground shadow-lg shadow-primary/30 hover:opacity-90 hover:scale-105 transition-all" onClick={handlePlayPause}>
                 {isPlaying ? <Pause className="w-7 h-7" /> : <Play className="w-7 h-7 ml-0.5" />}
               </Button>
               <Button variant="ghost" size="icon" onClick={handleNext} className="text-muted-foreground hover:text-foreground" disabled={!currentTrack}>
                 <SkipForward className="w-5 h-5" />
               </Button>
             </div>
-
-            {/* Volume */}
             <div className="flex items-center gap-3">
               <Button variant="ghost" size="icon" className="shrink-0" onClick={() => setIsMuted(m => !m)}>
                 {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
               </Button>
-              <Slider
-                value={isMuted ? [0] : volume}
-                onValueChange={(v) => { setVolume(v); setIsMuted(false); }}
-                max={100}
-                step={1}
-              />
+              <Slider value={isMuted ? [0] : volume} onValueChange={(v) => { setVolume(v); setIsMuted(false); }} max={100} step={1} />
             </div>
           </div>
         </div>
 
         {/* ── Row: Upload + YouTube + Devices + Queue ── */}
         <div className="grid grid-cols-4 gap-2">
-          {/* Upload */}
           <label className="glass-card rounded-xl p-3 flex flex-col items-center gap-1.5 cursor-pointer border border-border/50 hover:border-primary/40 transition-colors group">
             <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
               <Upload className="w-4 h-4 text-primary" />
@@ -377,7 +407,6 @@ const Player = () => {
             <input type="file" accept="audio/*" multiple className="hidden" onChange={handleFileUpload} />
           </label>
 
-          {/* YouTube */}
           <button
             onClick={() => { setShowYoutube(y => !y); setShowDevices(false); setShowQueue(false); }}
             className={`glass-card rounded-xl p-3 flex flex-col items-center gap-1.5 border transition-colors ${showYoutube ? "border-red-500/50 glow-border" : "border-border/50 hover:border-red-500/40"}`}
@@ -388,7 +417,6 @@ const Player = () => {
             <span className="text-[10px] font-medium">YouTube</span>
           </button>
 
-          {/* Devices */}
           <button
             onClick={() => { setShowDevices(d => !d); setShowQueue(false); setShowYoutube(false); }}
             className={`glass-card rounded-xl p-3 flex flex-col items-center gap-1.5 border transition-colors ${showDevices ? "border-primary/50 glow-border" : "border-border/50 hover:border-primary/40"}`}
@@ -396,13 +424,12 @@ const Player = () => {
             <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center relative">
               <Users className="w-4 h-4 text-primary" />
               <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[9px] font-bold flex items-center justify-center">
-                {devices.length}
+                {onlineMembers.length}
               </span>
             </div>
-            <span className="text-[10px] font-medium">{devices.length} online</span>
+            <span className="text-[10px] font-medium">{onlineMembers.length} online</span>
           </button>
 
-          {/* Queue */}
           <button
             onClick={() => { setShowQueue(q => !q); setShowDevices(false); setShowYoutube(false); }}
             className={`glass-card rounded-xl p-3 flex flex-col items-center gap-1.5 border transition-colors ${showQueue ? "border-primary/50 glow-border" : "border-border/50 hover:border-primary/40"}`}
@@ -427,27 +454,50 @@ const Player = () => {
               <h3 className="font-semibold font-display text-sm flex items-center gap-2">
                 <Wifi className="w-4 h-4 text-primary" /> Connected Devices
               </h3>
-              <span className="text-xs text-muted-foreground">{devices.length} online</span>
+              <span className="text-xs text-muted-foreground">{onlineMembers.length} online</span>
             </div>
             <div className="divide-y divide-border/30">
-              {devices.map((device) => (
-                <div key={device.id} className="flex items-center gap-3 px-4 py-3">
+              {members.map((member) => (
+                <div key={member.id} className={`flex items-center gap-3 px-4 py-3 ${!member.is_online ? "opacity-40" : ""}`}>
                   <div className="relative">
                     <div className="w-9 h-9 rounded-full bg-secondary flex items-center justify-center text-sm font-bold font-display text-foreground">
-                      {device.name.charAt(0)}
+                      {member.device_name.charAt(0)}
                     </div>
-                    <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-card bg-primary" />
+                    <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-card ${member.is_online ? "bg-primary" : "bg-muted-foreground"}`} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{device.name}</p>
-                    <p className="text-xs text-muted-foreground">{device.isHost ? "Host · This device" : "Listener"}</p>
+                    <p className="text-sm font-medium truncate flex items-center gap-1.5">
+                      {member.device_name}
+                      {member.is_muted && <VolumeOff className="w-3 h-3 text-destructive" />}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {member.role === "admin" ? "Admin · Host" : "Listener"}
+                      {member.user_id === user?.id ? " · You" : ""}
+                      {!member.is_online ? " · Offline" : ""}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-1.5 text-[10px] text-primary font-mono">
-                    <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                    Synced
-                  </div>
+                  {member.is_online && (
+                    <div className="flex items-center gap-1.5 text-[10px] text-primary font-mono">
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                      Synced
+                    </div>
+                  )}
+                  {/* Admin controls */}
+                  {isAdmin && member.user_id !== user?.id && member.is_online && (
+                    <div className="flex items-center gap-1">
+                      <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => handleToggleMute(member.id, member.is_muted)} title={member.is_muted ? "Unmute" : "Mute"}>
+                        {member.is_muted ? <Volume1 className="w-3.5 h-3.5 text-primary" /> : <VolumeOff className="w-3.5 h-3.5 text-muted-foreground" />}
+                      </Button>
+                      <Button variant="ghost" size="icon" className="w-7 h-7 text-destructive hover:text-destructive" onClick={() => handleKick(member.id)} title="Remove user">
+                        <UserMinus className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
+              {members.length === 0 && (
+                <div className="py-8 text-center text-sm text-muted-foreground">No devices connected</div>
+              )}
             </div>
           </div>
         )}
@@ -459,9 +509,7 @@ const Player = () => {
               <h3 className="font-semibold font-display text-sm flex items-center gap-2">
                 <ListMusic className="w-4 h-4 text-accent" /> Queue
               </h3>
-              {queue.length === 0 && (
-                <span className="text-xs text-muted-foreground">Add tracks to get started</span>
-              )}
+              {queue.length === 0 && <span className="text-xs text-muted-foreground">Add tracks to get started</span>}
             </div>
             {queue.length === 0 ? (
               <div className="py-10 text-center">
@@ -475,9 +523,7 @@ const Player = () => {
                   <div
                     key={track.id}
                     onClick={() => { setCurrentTrackIndex(idx); setIsPlaying(true); setProgress(0); setCurrentSec(0); setTotalDuration(0); }}
-                    className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
-                      idx === currentTrackIndex ? "bg-primary/10" : "hover:bg-secondary/40"
-                    }`}
+                    className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${idx === currentTrackIndex ? "bg-primary/10" : "hover:bg-secondary/40"}`}
                   >
                     <div className="w-8 h-8 rounded-lg bg-secondary flex items-center justify-center shrink-0">
                       {idx === currentTrackIndex && isPlaying ? (
@@ -496,12 +542,7 @@ const Player = () => {
                       <p className={`text-sm font-medium truncate ${idx === currentTrackIndex ? "text-primary" : ""}`}>{track.name}</p>
                       <p className="text-xs text-muted-foreground truncate">{track.artist}</p>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="w-7 h-7 shrink-0 text-muted-foreground hover:text-destructive"
-                      onClick={(e) => { e.stopPropagation(); removeTrack(track.id); }}
-                    >
+                    <Button variant="ghost" size="icon" className="w-7 h-7 shrink-0 text-muted-foreground hover:text-destructive" onClick={(e) => { e.stopPropagation(); removeTrack(track.id); }}>
                       <X className="w-3.5 h-3.5" />
                     </Button>
                   </div>
@@ -519,16 +560,15 @@ const Player = () => {
               <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary border border-card animate-pulse" />
             </div>
             <div>
-              <p className="text-xs font-medium">Synced · ~12ms latency</p>
+              <p className="text-xs font-medium">Synced · Real-time</p>
               <p className="text-[10px] text-muted-foreground">Room: {roomCode}</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <Users className="w-3.5 h-3.5" />
-            <span className="text-xs font-medium">{devices.length} device{devices.length !== 1 ? "s" : ""}</span>
+            <span className="text-xs font-medium">{onlineMembers.length} device{onlineMembers.length !== 1 ? "s" : ""}</span>
           </div>
         </div>
-
       </div>
     </div>
   );

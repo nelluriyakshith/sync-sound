@@ -7,7 +7,7 @@ const Footer = () => (
         <Logo size={20} />
         <span className="font-semibold text-foreground font-display">Sync Sound</span>
       </div>
-      <p>© 2026 Sync Sound. Synchronized audio for everyone.</p>
+      <p>© 2026 Sync Sound. All rights reserved. Copyright by Nelluri Yakshith.</p>
     </div>
   </footer>
 );

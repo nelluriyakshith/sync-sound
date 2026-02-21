@@ -14,13 +14,84 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      room_members: {
+        Row: {
+          device_name: string
+          id: string
+          is_muted: boolean
+          is_online: boolean
+          joined_at: string
+          last_seen: string
+          role: string
+          room_id: string
+          user_id: string
+        }
+        Insert: {
+          device_name?: string
+          id?: string
+          is_muted?: boolean
+          is_online?: boolean
+          joined_at?: string
+          last_seen?: string
+          role?: string
+          room_id: string
+          user_id: string
+        }
+        Update: {
+          device_name?: string
+          id?: string
+          is_muted?: boolean
+          is_online?: boolean
+          joined_at?: string
+          last_seen?: string
+          role?: string
+          room_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "room_members_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      rooms: {
+        Row: {
+          code: string
+          created_at: string
+          created_by: string
+          id: string
+          is_active: boolean
+          updated_at: string
+        }
+        Insert: {
+          code: string
+          created_at?: string
+          created_by: string
+          id?: string
+          is_active?: boolean
+          updated_at?: string
+        }
+        Update: {
+          code?: string
+          created_at?: string
+          created_by?: string
+          id?: string
+          is_active?: boolean
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      is_room_admin: { Args: { _room_id: string }; Returns: boolean }
+      is_room_member: { Args: { _room_id: string }; Returns: boolean }
     }
     Enums: {
       [_ in never]: never
