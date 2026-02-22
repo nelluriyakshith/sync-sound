@@ -153,7 +153,7 @@ const Room = () => {
           </div>
           <h1 className="text-3xl font-bold mb-2 font-display">Sync Rooms</h1>
           <p className="text-muted-foreground">Create or join a room to sync audio across devices</p>
-          <p className="text-xs text-muted-foreground/60 mt-1">Signed in as {user?.email}</p>
+          
         </div>
 
         <Card className="glass-card glow-border">
