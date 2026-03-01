@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useNavigate } from "react-router-dom";
-import { Plus, LogIn, Copy, Users, CheckCircle2, LogOut } from "lucide-react";
+import { Plus, LogIn, Copy, Users, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -33,7 +33,7 @@ const getDeviceName = () => {
 const Room = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { user, signOut } = useAuth();
+  const { user } = useAuth();
   const [joinCode, setJoinCode] = useState("");
   const [createdCode, setCreatedCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -217,11 +217,8 @@ const Room = () => {
           </CardContent>
         </Card>
 
-        <div className="text-center">
-          <Button variant="ghost" size="sm" onClick={signOut} className="gap-2 text-muted-foreground">
-            <LogOut className="w-4 h-4" /> Sign Out
-          </Button>
-        </div>
+
+
       </div>
     </div>
   );

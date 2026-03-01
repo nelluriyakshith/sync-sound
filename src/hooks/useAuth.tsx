@@ -22,11 +22,23 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
+    const init = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        setSession(session);
+        setUser(session.user);
+      } else {
+        // Auto sign in anonymously
+        const { data } = await supabase.auth.signInAnonymously();
+        if (data.session) {
+          setSession(data.session);
+          setUser(data.session.user);
+        }
+      }
       setLoading(false);
-    });
+    };
+
+    init();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
