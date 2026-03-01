@@ -1,250 +1,150 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Download, Smartphone, CheckCircle2, Share, MoreVertical } from "lucide-react";
+import { Download, CheckCircle2, Share, MoreVertical, Smartphone } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useToast } from "@/hooks/use-toast";
 
 const Install = () => {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const [platform, setPlatform] = useState<'ios' | 'android' | 'desktop'>('desktop');
 
   useEffect(() => {
-    // Detect platform
     const userAgent = window.navigator.userAgent.toLowerCase();
-    const isIOS = /iphone|ipad|ipod/.test(userAgent);
-    const isAndroid = /android/.test(userAgent);
-    
-    if (isIOS) setPlatform('ios');
-    else if (isAndroid) setPlatform('android');
+    if (/iphone|ipad|ipod/.test(userAgent)) setPlatform('ios');
+    else if (/android/.test(userAgent)) setPlatform('android');
     else setPlatform('desktop');
 
-    // Check if already installed
     if (window.matchMedia('(display-mode: standalone)').matches) {
       setIsInstalled(true);
     }
 
-    // Capture install prompt
     const handleBeforeInstall = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-    };
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
   }, []);
 
-  const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
+  // Auto-trigger install prompt when available
+  useEffect(() => {
+    if (deferredPrompt && !isInstalled) {
+      triggerInstall();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deferredPrompt]);
+
+  const triggerInstall = useCallback(async () => {
+    if (!deferredPrompt) {
+      toast({ title: "Install not available", description: "Use your browser menu to install this app", variant: "destructive" });
+      return;
+    }
 
     deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;
-    
+
     if (outcome === 'accepted') {
       setIsInstalled(true);
+      toast({ title: "App installed!", description: "Find Sync Sound on your home screen" });
     }
-    
     setDeferredPrompt(null);
-  };
+  }, [deferredPrompt, toast]);
+
+  if (isInstalled) {
+    return (
+      <div className="min-h-screen pt-20 px-4 pb-12 flex items-center justify-center">
+        <Card className="glass-card glow-border w-full max-w-md">
+          <CardContent className="p-8 text-center">
+            <CheckCircle2 className="w-16 h-16 text-primary mx-auto mb-4" />
+            <h2 className="text-2xl font-bold font-display mb-2">App Installed!</h2>
+            <p className="text-muted-foreground mb-6">
+              You can now use Sync Sound from your home screen
+            </p>
+            <Button onClick={() => navigate('/')} size="lg" className="bg-gradient-to-r from-[hsl(var(--gradient-from))] to-[hsl(var(--gradient-to))] text-primary-foreground">
+              Go to Home
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen px-4 py-12">
-      <div className="container max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="text-center mb-12">
-          <div className="mb-6 flex justify-center">
-            {deferredPrompt && !isInstalled ? (
-              <button
-                onClick={handleInstallClick}
-                className="group p-8 rounded-3xl bg-gradient-to-br from-primary/20 to-accent/20 backdrop-blur-sm border-2 border-primary hover:border-accent transition-all duration-300 hover:scale-110 hover:shadow-2xl hover:shadow-primary/50 cursor-pointer"
-                aria-label="Install App"
+    <div className="min-h-screen pt-20 px-4 pb-12 flex items-center justify-center">
+      <div className="w-full max-w-md space-y-6">
+        <Card className="glass-card glow-border">
+          <CardContent className="p-8 text-center space-y-6">
+            <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center">
+              <Download className="w-10 h-10 text-primary" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold font-display mb-2">Install Sync Sound</h1>
+              <p className="text-muted-foreground text-sm">
+                {deferredPrompt
+                  ? "Tap below to install instantly!"
+                  : platform === 'ios'
+                    ? "Follow the steps below to install"
+                    : "Use your browser menu to install"}
+              </p>
+            </div>
+
+            {deferredPrompt && (
+              <Button
+                onClick={triggerInstall}
+                size="lg"
+                className="w-full gap-2 bg-gradient-to-r from-[hsl(var(--gradient-from))] via-[hsl(var(--gradient-via))] to-[hsl(var(--gradient-to))] text-primary-foreground font-display font-semibold"
               >
-                <Download className="w-16 h-16 text-primary group-hover:text-accent transition-colors animate-pulse" />
-              </button>
-            ) : (
-              <div className="p-4 rounded-2xl bg-card/50 backdrop-blur-sm border border-border">
-                <Download className="w-12 h-12 text-primary" />
+                <Download className="w-5 h-5" /> Install Now
+              </Button>
+            )}
+
+            {!deferredPrompt && platform === 'ios' && (
+              <div className="text-left space-y-3">
+                <p className="text-sm font-semibold flex items-center gap-2">
+                  <Share className="w-4 h-4 text-primary" /> Steps for iPhone/iPad
+                </p>
+                <ol className="space-y-2 text-sm text-muted-foreground">
+                  <li>1. Tap the <strong className="text-foreground">Share button</strong> in Safari</li>
+                  <li>2. Scroll down → <strong className="text-foreground">"Add to Home Screen"</strong></li>
+                  <li>3. Tap <strong className="text-foreground">"Add"</strong></li>
+                </ol>
               </div>
             )}
-          </div>
-          <h1 className="text-4xl md:text-5xl font-bold mb-4 gradient-text">
-            Install Sync Sound
-          </h1>
-          <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-            {deferredPrompt && !isInstalled 
-              ? "Click the icon above to install the app instantly!" 
-              : "Install our app for the best experience. Works offline and loads instantly from your home screen."}
-          </p>
-        </div>
 
-        {isInstalled ? (
-          <Card className="bg-card/50 backdrop-blur-sm border-border mb-8">
-            <CardContent className="p-8 text-center">
-              <CheckCircle2 className="w-16 h-16 text-primary mx-auto mb-4" />
-              <h2 className="text-2xl font-bold mb-2">App Installed!</h2>
-              <p className="text-muted-foreground mb-6">
-                You can now use Sync Sound from your home screen
-              </p>
-              <Button onClick={() => navigate('/')} size="lg">
-                Go to Home
-              </Button>
-            </CardContent>
-          </Card>
-        ) : (
-          <>
-            {/* Install Button - Android/Desktop */}
-            {deferredPrompt && platform !== 'ios' && (
-              <Card className="bg-card/50 backdrop-blur-sm border-border mb-8">
-                <CardContent className="p-8 text-center">
-                  <Smartphone className="w-16 h-16 text-primary mx-auto mb-4" />
-                  <h2 className="text-2xl font-bold mb-2">Quick Install</h2>
-                  <p className="text-muted-foreground mb-6">
-                    Install Sync Sound with one click
-                  </p>
-                  <Button onClick={handleInstallClick} size="lg" className="bg-gradient-to-r from-primary via-[hsl(var(--gradient-via))] to-accent">
-                    <Download className="w-5 h-5 mr-2" />
-                    Install App
-                  </Button>
-                </CardContent>
-              </Card>
+            {!deferredPrompt && platform === 'android' && (
+              <div className="text-left space-y-3">
+                <p className="text-sm font-semibold flex items-center gap-2">
+                  <Smartphone className="w-4 h-4 text-primary" /> Steps for Android
+                </p>
+                <ol className="space-y-2 text-sm text-muted-foreground">
+                  <li>1. Tap the <strong className="text-foreground">⋮ menu</strong> in your browser</li>
+                  <li>2. Select <strong className="text-foreground">"Install app"</strong> or <strong className="text-foreground">"Add to Home Screen"</strong></li>
+                  <li>3. Tap <strong className="text-foreground">"Install"</strong></li>
+                </ol>
+              </div>
             )}
 
-            {/* Manual Instructions */}
-            <div className="space-y-6">
-              <h2 className="text-2xl font-bold text-center mb-8">Installation Instructions</h2>
+            {!deferredPrompt && platform === 'desktop' && (
+              <div className="text-left space-y-3">
+                <p className="text-sm font-semibold flex items-center gap-2">
+                  <MoreVertical className="w-4 h-4 text-primary" /> Steps for Desktop
+                </p>
+                <ol className="space-y-2 text-sm text-muted-foreground">
+                  <li>1. Look for the <strong className="text-foreground">install icon</strong> in the address bar</li>
+                  <li>2. Click <strong className="text-foreground">"Install"</strong></li>
+                </ol>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-              {/* iOS Instructions */}
-              {platform === 'ios' && (
-                <Card className="bg-card/50 backdrop-blur-sm border-border">
-                  <CardContent className="p-6">
-                    <div className="flex items-start gap-4 mb-4">
-                      <div className="p-3 rounded-xl bg-primary/10 shrink-0">
-                        <Share className="w-6 h-6 text-primary" />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-semibold mb-2">Install on iPhone/iPad</h3>
-                        <ol className="space-y-3 text-muted-foreground">
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">1.</span>
-                            <span>Tap the <strong>Share button</strong> in Safari (square with arrow pointing up)</span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">2.</span>
-                            <span>Scroll down and tap <strong>"Add to Home Screen"</strong></span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">3.</span>
-                            <span>Tap <strong>"Add"</strong> in the top right corner</span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">4.</span>
-                            <span>Find the Sync Sound icon on your home screen!</span>
-                          </li>
-                        </ol>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Android Instructions */}
-              {platform === 'android' && !deferredPrompt && (
-                <Card className="bg-card/50 backdrop-blur-sm border-border">
-                  <CardContent className="p-6">
-                    <div className="flex items-start gap-4 mb-4">
-                      <div className="p-3 rounded-xl bg-primary/10 shrink-0">
-                        <MoreVertical className="w-6 h-6 text-primary" />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-semibold mb-2">Install on Android</h3>
-                        <ol className="space-y-3 text-muted-foreground">
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">1.</span>
-                            <span>Tap the <strong>menu button</strong> (three dots) in your browser</span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">2.</span>
-                            <span>Select <strong>"Add to Home screen"</strong> or <strong>"Install app"</strong></span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">3.</span>
-                            <span>Tap <strong>"Install"</strong> or <strong>"Add"</strong></span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">4.</span>
-                            <span>Launch Sync Sound from your home screen!</span>
-                          </li>
-                        </ol>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Desktop Instructions */}
-              {platform === 'desktop' && !deferredPrompt && (
-                <Card className="bg-card/50 backdrop-blur-sm border-border">
-                  <CardContent className="p-6">
-                    <div className="flex items-start gap-4 mb-4">
-                      <div className="p-3 rounded-xl bg-primary/10 shrink-0">
-                        <Download className="w-6 h-6 text-primary" />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-semibold mb-2">Install on Desktop</h3>
-                        <ol className="space-y-3 text-muted-foreground">
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">1.</span>
-                            <span>Look for the <strong>install icon</strong> in your browser's address bar</span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">2.</span>
-                            <span>Click <strong>"Install"</strong> or <strong>"Add"</strong></span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="font-semibold text-foreground">3.</span>
-                            <span>The app will be added to your applications</span>
-                          </li>
-                        </ol>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Benefits */}
-              <Card className="bg-card/50 backdrop-blur-sm border-border">
-                <CardContent className="p-6">
-                  <h3 className="text-xl font-semibold mb-4">Why Install?</h3>
-                  <ul className="space-y-3 text-muted-foreground">
-                    <li className="flex items-start gap-3">
-                      <CheckCircle2 className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-                      <span><strong>Works Offline</strong> - Use the app even without internet</span>
-                    </li>
-                    <li className="flex items-start gap-3">
-                      <CheckCircle2 className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-                      <span><strong>Faster Loading</strong> - Instant access from your home screen</span>
-                    </li>
-                    <li className="flex items-start gap-3">
-                      <CheckCircle2 className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-                      <span><strong>Full Screen</strong> - No browser UI taking up space</span>
-                    </li>
-                    <li className="flex items-start gap-3">
-                      <CheckCircle2 className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-                      <span><strong>Native Feel</strong> - Feels just like a real app</span>
-                    </li>
-                  </ul>
-                </CardContent>
-              </Card>
-            </div>
-          </>
-        )}
-
-        <div className="text-center mt-8">
-          <Button variant="ghost" onClick={() => navigate('/')}>
+        <div className="text-center">
+          <Button variant="ghost" size="sm" onClick={() => navigate('/')} className="text-muted-foreground">
             Back to Home
           </Button>
         </div>

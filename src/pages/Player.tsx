@@ -5,7 +5,7 @@ import { Slider } from "@/components/ui/slider";
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   Users, Copy, ArrowLeft, Wifi, Upload, Music, ListMusic, X, CheckCircle2, Youtube,
-  Shield, UserMinus, VolumeOff, Volume1
+  Shield, UserMinus, VolumeOff, Volume1, ShieldPlus
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
@@ -170,6 +170,13 @@ const Player = () => {
     if (!isAdmin) return;
     const { error } = await supabase.from("room_members").update({ is_muted: !currentMuted }).eq("id", memberId);
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
+  };
+
+  const handlePromoteToAdmin = async (memberId: string) => {
+    if (!isAdmin) return;
+    const { error } = await supabase.from("room_members").update({ role: "admin" }).eq("id", memberId);
+    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
+    else toast({ title: "Promoted to Admin" });
   };
 
   /* ── audio element sync (local tracks only) ── */
@@ -485,6 +492,11 @@ const Player = () => {
                   {/* Admin controls */}
                   {isAdmin && member.user_id !== user?.id && member.is_online && (
                     <div className="flex items-center gap-1">
+                      {member.role !== "admin" && (
+                        <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => handlePromoteToAdmin(member.id)} title="Promote to Admin">
+                          <ShieldPlus className="w-3.5 h-3.5 text-accent" />
+                        </Button>
+                      )}
                       <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => handleToggleMute(member.id, member.is_muted)} title={member.is_muted ? "Unmute" : "Mute"}>
                         {member.is_muted ? <Volume1 className="w-3.5 h-3.5 text-primary" /> : <VolumeOff className="w-3.5 h-3.5 text-muted-foreground" />}
                       </Button>
