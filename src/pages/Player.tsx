@@ -451,7 +451,7 @@ const Player = () => {
     if (!queue[nextIdx]?.isLocal) {
       syncPlaybackState({ current_track_index: nextIdx, current_time_seconds: 0, is_playing: true });
     }
-  }, [queue.length, currentTrackIndex, syncPlaybackState]);
+  }, [queue, currentTrackIndex, syncPlaybackState]);
 
   const handlePrev = useCallback(() => {
     setProgress(0); setCurrentSec(0); setTotalDuration(0);
@@ -460,7 +460,7 @@ const Player = () => {
     if (!queue[prevIdx]?.isLocal) {
       syncPlaybackState({ current_track_index: prevIdx, current_time_seconds: 0, is_playing: true });
     }
-  }, [queue.length, currentTrackIndex, syncPlaybackState]);
+  }, [queue, currentTrackIndex, syncPlaybackState]);
 
   const handleSeek = (v: number[]) => {
     if (isYouTube && totalDuration) {
