@@ -14,7 +14,7 @@ import Logo from "@/components/Logo";
 import YouTubePlayer from "@/components/player/YouTubePlayer";
 import YouTubeEmbed from "@/components/player/YouTubeEmbed";
 
-/* ─── types ─────────────────────────────────────── */
+/* ─── types ─────────────────────────────────── */
 interface Track {
   id: string;
   name: string;
@@ -23,6 +23,7 @@ interface Track {
   url: string;
   isLocal: boolean;
   youtubeId?: string;
+  dbId?: string; // room_queue row id
 }
 
 interface RoomMember {
@@ -35,14 +36,14 @@ interface RoomMember {
   joined_at: string;
 }
 
-/* ─── helpers ───────────────────────────────────── */
+/* ─── helpers ───────────────────────────────── */
 const formatTime = (s: number) => {
   const m = Math.floor(s / 60);
   const sec = Math.floor(s % 60);
   return `${m}:${sec.toString().padStart(2, "0")}`;
 };
 
-/* ─── component ─────────────────────────────────── */
+/* ─── component ─────────────────────────────── */
 const Player = () => {
   const { roomCode } = useParams<{ roomCode: string }>();
   const navigate = useNavigate();
@@ -71,11 +72,14 @@ const Player = () => {
   const [isAdmin, setIsAdmin] = useState(false);
   const [showDevices, setShowDevices] = useState(false);
 
+  /* flag to prevent echo when we ourselves update playback state */
+  const isLocalUpdate = useRef(false);
+
   const currentTrack = queue[currentTrackIndex] ?? null;
   const isYouTube = !!currentTrack?.youtubeId;
   const onlineMembers = members.filter(m => m.is_online);
 
-  /* ── Load room and members ── */
+  /* ── Load room, members, queue, and playback state ── */
   useEffect(() => {
     if (!roomCode || !user) return;
 
@@ -101,8 +105,43 @@ const Player = () => {
         .from("room_members")
         .select("*")
         .eq("room_id", room.id);
-
       if (mems) setMembers(mems as RoomMember[]);
+
+      // Load queue
+      const { data: queueData } = await supabase
+        .from("room_queue")
+        .select("*")
+        .eq("room_id", room.id)
+        .order("position", { ascending: true });
+
+      if (queueData && queueData.length > 0) {
+        setQueue(queueData.map((q: any) => ({
+          id: q.track_id,
+          name: q.name,
+          artist: q.artist,
+          url: q.url,
+          isLocal: q.is_local,
+          youtubeId: q.youtube_id || undefined,
+          duration: 0,
+          dbId: q.id,
+        })));
+      }
+
+      // Load playback state
+      const { data: ps } = await supabase
+        .from("room_playback_state")
+        .select("*")
+        .eq("room_id", room.id)
+        .maybeSingle();
+
+      if (ps) {
+        setCurrentTrackIndex(ps.current_track_index);
+        setIsPlaying(ps.is_playing);
+        if (ps.current_time_seconds > 0) {
+          setCurrentSec(ps.current_time_seconds);
+          setYtSeekTo(ps.current_time_seconds);
+        }
+      }
     };
 
     loadRoom();
@@ -116,12 +155,7 @@ const Player = () => {
       .channel(`room-members-${roomId}`)
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "room_members",
-          filter: `room_id=eq.${roomId}`,
-        },
+        { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` },
         (payload) => {
           if (payload.eventType === "INSERT") {
             const newMember = payload.new as RoomMember;
@@ -132,6 +166,10 @@ const Player = () => {
           } else if (payload.eventType === "UPDATE") {
             const updated = payload.new as RoomMember;
             setMembers(prev => prev.map(m => m.id === updated.id ? updated : m));
+            // Check if current user got promoted
+            if (updated.user_id === user?.id && updated.role === "admin") {
+              setIsAdmin(true);
+            }
           } else if (payload.eventType === "DELETE") {
             const old = payload.old as { id: string };
             setMembers(prev => prev.filter(m => m.id !== old.id));
@@ -140,10 +178,88 @@ const Player = () => {
       )
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
+  }, [roomId, user]);
+
+  /* ── Real-time subscription for queue ── */
+  useEffect(() => {
+    if (!roomId) return;
+
+    const channel = supabase
+      .channel(`room-queue-${roomId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "room_queue", filter: `room_id=eq.${roomId}` },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            const q = payload.new as any;
+            const newTrack: Track = {
+              id: q.track_id, name: q.name, artist: q.artist, url: q.url,
+              isLocal: q.is_local, youtubeId: q.youtube_id || undefined, duration: 0, dbId: q.id,
+            };
+            setQueue(prev => {
+              if (prev.find(t => t.dbId === q.id)) return prev;
+              return [...prev, newTrack];
+            });
+          } else if (payload.eventType === "DELETE") {
+            const old = payload.old as { id: string };
+            setQueue(prev => prev.filter(t => t.dbId !== old.id));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [roomId]);
+
+  /* ── Real-time subscription for playback state ── */
+  useEffect(() => {
+    if (!roomId) return;
+
+    const channel = supabase
+      .channel(`room-playback-${roomId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "room_playback_state", filter: `room_id=eq.${roomId}` },
+        (payload) => {
+          if (isLocalUpdate.current) {
+            isLocalUpdate.current = false;
+            return;
+          }
+          const ps = payload.new as any;
+          if (ps.updated_by === user?.id) return; // ignore own updates
+          setCurrentTrackIndex(ps.current_track_index);
+          setIsPlaying(ps.is_playing);
+          if (ps.current_time_seconds > 0) {
+            setCurrentSec(ps.current_time_seconds);
+            setYtSeekTo(ps.current_time_seconds);
+            if (audioRef.current) {
+              audioRef.current.currentTime = ps.current_time_seconds;
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [roomId, user]);
+
+  /* ── Sync playback state to DB ── */
+  const syncPlaybackState = useCallback(async (overrides?: { is_playing?: boolean; current_track_index?: number; current_time_seconds?: number }) => {
+    if (!roomId || !user) return;
+    const data = {
+      room_id: roomId,
+      is_playing: overrides?.is_playing ?? isPlaying,
+      current_track_index: overrides?.current_track_index ?? currentTrackIndex,
+      current_time_seconds: overrides?.current_time_seconds ?? currentSec,
+      updated_at: new Date().toISOString(),
+      updated_by: user.id,
+    };
+    isLocalUpdate.current = true;
+    await supabase
+      .from("room_playback_state")
+      .upsert(data, { onConflict: "room_id" });
+  }, [roomId, user, isPlaying, currentTrackIndex, currentSec]);
 
   /* ── Mark offline on unmount ── */
   useEffect(() => {
@@ -218,25 +334,35 @@ const Player = () => {
     isPlaying ? audioRef.current.play().catch(() => {}) : audioRef.current.pause();
   }, [isPlaying, isYouTube]);
 
-  const handlePlayPause = () => setIsPlaying(p => !p);
+  const handlePlayPause = () => {
+    const next = !isPlaying;
+    setIsPlaying(next);
+    syncPlaybackState({ is_playing: next, current_time_seconds: currentSec });
+  };
 
   const handleNext = useCallback(() => {
     setProgress(0); setCurrentSec(0); setTotalDuration(0);
-    setCurrentTrackIndex(i => (i + 1) % Math.max(queue.length, 1));
-  }, [queue.length]);
+    const nextIdx = (currentTrackIndex + 1) % Math.max(queue.length, 1);
+    setCurrentTrackIndex(nextIdx);
+    syncPlaybackState({ current_track_index: nextIdx, current_time_seconds: 0, is_playing: true });
+  }, [queue.length, currentTrackIndex, syncPlaybackState]);
 
   const handlePrev = useCallback(() => {
     setProgress(0); setCurrentSec(0); setTotalDuration(0);
-    setCurrentTrackIndex(i => (i - 1 + Math.max(queue.length, 1)) % Math.max(queue.length, 1));
-  }, [queue.length]);
+    const prevIdx = (currentTrackIndex - 1 + Math.max(queue.length, 1)) % Math.max(queue.length, 1);
+    setCurrentTrackIndex(prevIdx);
+    syncPlaybackState({ current_track_index: prevIdx, current_time_seconds: 0, is_playing: true });
+  }, [queue.length, currentTrackIndex, syncPlaybackState]);
 
   const handleSeek = (v: number[]) => {
     if (isYouTube && totalDuration) {
       const t = (v[0] / 100) * totalDuration;
       setYtSeekTo(t); setProgress(v[0]); setCurrentSec(t);
+      syncPlaybackState({ current_time_seconds: t });
     } else if (audioRef.current && currentTrack) {
       const t = (v[0] / 100) * audioRef.current.duration;
       audioRef.current.currentTime = t; setProgress(v[0]); setCurrentSec(t);
+      syncPlaybackState({ current_time_seconds: t });
     }
   };
 
@@ -249,9 +375,9 @@ const Player = () => {
   const handleYtReady = useCallback((dur: number) => { setTotalDuration(dur); }, []);
 
   /* ── local file upload ── */
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
-    if (!files.length) return;
+    if (!files.length || !roomId || !user) return;
     const newTracks: Track[] = files
       .filter(f => f.type.startsWith("audio/"))
       .map(f => {
@@ -264,15 +390,64 @@ const Player = () => {
       toast({ title: "No audio files", description: "Please select valid audio files", variant: "destructive" });
       return;
     }
-    setQueue(q => { const merged = [...q, ...newTracks]; if (q.length === 0) setCurrentTrackIndex(0); return merged; });
+
+    // Add to DB so other devices see it (though they can't play local files)
+    for (let i = 0; i < newTracks.length; i++) {
+      const t = newTracks[i];
+      const { data } = await supabase
+        .from("room_queue")
+        .insert({
+          room_id: roomId,
+          track_id: t.id,
+          name: t.name,
+          artist: t.artist,
+          url: "",
+          is_local: true,
+          position: queue.length + i,
+          added_by: user.id,
+        })
+        .select()
+        .single();
+      if (data) t.dbId = data.id;
+    }
+
+    setQueue(q => { const merged = [...q, ...newTracks]; if (q.length === 0) { setCurrentTrackIndex(0); setIsPlaying(true); syncPlaybackState({ is_playing: true, current_track_index: 0, current_time_seconds: 0 }); } return merged; });
     toast({ title: `${newTracks.length} track${newTracks.length > 1 ? "s" : ""} added` });
     e.target.value = "";
   };
 
   /* ── YouTube track add ── */
-  const handleYoutubeAdd = (track: { id: string; name: string; artist: string; url: string; youtubeId: string }) => {
+  const handleYoutubeAdd = async (track: { id: string; name: string; artist: string; url: string; youtubeId: string }) => {
+    if (!roomId || !user) return;
     const newTrack: Track = { ...track, duration: 0, isLocal: false };
-    setQueue(q => { const merged = [...q, newTrack]; if (q.length === 0) { setCurrentTrackIndex(0); setIsPlaying(true); } return merged; });
+
+    const { data } = await supabase
+      .from("room_queue")
+      .insert({
+        room_id: roomId,
+        track_id: track.id,
+        name: track.name,
+        artist: track.artist,
+        url: track.url,
+        youtube_id: track.youtubeId,
+        is_local: false,
+        position: queue.length,
+        added_by: user.id,
+      })
+      .select()
+      .single();
+
+    if (data) newTrack.dbId = data.id;
+
+    setQueue(q => {
+      const merged = [...q, newTrack];
+      if (q.length === 0) {
+        setCurrentTrackIndex(0);
+        setIsPlaying(true);
+        syncPlaybackState({ is_playing: true, current_track_index: 0, current_time_seconds: 0 });
+      }
+      return merged;
+    });
   };
 
   const handleCopyCode = () => {
@@ -280,7 +455,11 @@ const Player = () => {
     toast({ title: "Copied!", description: "Room code copied to clipboard" });
   };
 
-  const removeTrack = (id: string) => {
+  const removeTrack = async (id: string) => {
+    const track = queue.find(t => t.id === id);
+    if (track?.dbId) {
+      await supabase.from("room_queue").delete().eq("id", track.dbId);
+    }
     setQueue(q => {
       const idx = q.findIndex(t => t.id === id);
       const newQ = q.filter(t => t.id !== id);
@@ -350,7 +529,7 @@ const Player = () => {
                   </div>
                   {currentTrack.isLocal && (
                     <span className="inline-flex items-center gap-1 text-xs bg-primary/20 text-primary rounded-full px-2.5 py-1">
-                      <CheckCircle2 className="w-3 h-3" /> Offline
+                      <CheckCircle2 className="w-3 h-3" /> Local File
                     </span>
                   )}
                 </div>
@@ -534,7 +713,7 @@ const Player = () => {
                 {queue.map((track, idx) => (
                   <div
                     key={track.id}
-                    onClick={() => { setCurrentTrackIndex(idx); setIsPlaying(true); setProgress(0); setCurrentSec(0); setTotalDuration(0); }}
+                    onClick={() => { setCurrentTrackIndex(idx); setIsPlaying(true); setProgress(0); setCurrentSec(0); setTotalDuration(0); syncPlaybackState({ current_track_index: idx, is_playing: true, current_time_seconds: 0 }); }}
                     className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${idx === currentTrackIndex ? "bg-primary/10" : "hover:bg-secondary/40"}`}
                   >
                     <div className="w-8 h-8 rounded-lg bg-secondary flex items-center justify-center shrink-0">
