@@ -18,16 +18,26 @@ const generateRoomCode = () => {
 
 const getDeviceName = () => {
   const ua = navigator.userAgent;
+  // Try to get specific phone model
   if (/iPhone/.test(ua)) return "iPhone";
   if (/iPad/.test(ua)) return "iPad";
   if (/Android/.test(ua)) {
-    const match = ua.match(/;\s*([^;)]+)\s*Build/);
-    return match ? match[1].trim() : "Android Device";
+    // Try to extract model name like "SM-G991B", "Pixel 7", "Redmi Note 12", etc.
+    const buildMatch = ua.match(/;\s*([^;)]+)\s*Build/);
+    if (buildMatch) return buildMatch[1].trim();
+    const androidMatch = ua.match(/Android[^;]*;\s*([^;)]+)/);
+    if (androidMatch) return androidMatch[1].trim();
+    return "Android Device";
   }
-  if (/Macintosh/.test(ua)) return "MacBook";
+  if (/Macintosh/.test(ua)) return "Mac";
   if (/Windows/.test(ua)) return "Windows PC";
+  if (/CrOS/.test(ua)) return "Chromebook";
   if (/Linux/.test(ua)) return "Linux PC";
-  return "Unknown Device";
+  // Add browser name as fallback
+  if (/Chrome/.test(ua)) return "Chrome Browser";
+  if (/Firefox/.test(ua)) return "Firefox Browser";
+  if (/Safari/.test(ua)) return "Safari Browser";
+  return "Device";
 };
 
 const Room = () => {
