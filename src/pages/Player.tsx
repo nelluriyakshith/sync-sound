@@ -24,6 +24,8 @@ interface Track {
   isLocal: boolean;
   youtubeId?: string;
   dbId?: string; // room_queue row id
+  position?: number;
+  addedBy?: string;
 }
 
 interface RoomMember {
@@ -34,6 +36,7 @@ interface RoomMember {
   is_muted: boolean;
   is_online: boolean;
   joined_at: string;
+  last_seen: string;
 }
 
 /* ─── helpers ───────────────────────────────── */
@@ -41,6 +44,49 @@ const formatTime = (s: number) => {
   const m = Math.floor(s / 60);
   const sec = Math.floor(s % 60);
   return `${m}:${sec.toString().padStart(2, "0")}`;
+};
+
+const getDeviceName = () => {
+  const ua = navigator.userAgent;
+  if (/iPhone/.test(ua)) return "iPhone";
+  if (/iPad/.test(ua)) return "iPad";
+  if (/Android/.test(ua)) {
+    const buildMatch = ua.match(/;\s*([^;)]+)\s*Build/);
+    if (buildMatch) return buildMatch[1].trim();
+    const androidMatch = ua.match(/Android[^;]*;\s*([^;)]+)/);
+    if (androidMatch) return androidMatch[1].trim();
+    return "Android Device";
+  }
+  if (/Macintosh/.test(ua)) return "Mac";
+  if (/Windows/.test(ua)) return "Windows PC";
+  if (/CrOS/.test(ua)) return "Chromebook";
+  if (/Linux/.test(ua)) return "Linux PC";
+  if (/Chrome/.test(ua)) return "Chrome Browser";
+  if (/Firefox/.test(ua)) return "Firefox Browser";
+  if (/Safari/.test(ua)) return "Safari Browser";
+  return "Device";
+};
+
+const dedupeMembers = (memberList: RoomMember[]) => {
+  const byUser = new Map<string, RoomMember>();
+  memberList.forEach((member) => {
+    const existing = byUser.get(member.user_id);
+    if (!existing) {
+      byUser.set(member.user_id, member);
+      return;
+    }
+
+    if (member.is_online !== existing.is_online) {
+      byUser.set(member.user_id, member.is_online ? member : existing);
+      return;
+    }
+
+    const existingTs = new Date(existing.last_seen || existing.joined_at).getTime();
+    const memberTs = new Date(member.last_seen || member.joined_at).getTime();
+    byUser.set(member.user_id, memberTs >= existingTs ? member : existing);
+  });
+
+  return Array.from(byUser.values());
 };
 
 /* ─── component ─────────────────────────────── */
@@ -98,14 +144,53 @@ const Player = () => {
       }
 
       setRoomId(room.id);
-      setIsAdmin(room.created_by === user.id);
+
+      // Ensure user is an online member when entering player (important for cross-device sync)
+      const { data: existingMember } = await supabase
+        .from("room_members")
+        .select("id, role")
+        .eq("room_id", room.id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (existingMember) {
+        const { error: memberUpdateError } = await supabase
+          .from("room_members")
+          .update({
+            is_online: true,
+            device_name: getDeviceName(),
+            last_seen: new Date().toISOString(),
+          })
+          .eq("id", existingMember.id);
+
+        if (memberUpdateError) {
+          toast({ title: "Sync warning", description: memberUpdateError.message, variant: "destructive" });
+        }
+      } else {
+        const { error: memberInsertError } = await supabase
+          .from("room_members")
+          .insert({
+            room_id: room.id,
+            user_id: user.id,
+            device_name: getDeviceName(),
+            role: room.created_by === user.id ? "admin" : "member",
+            is_online: true,
+            last_seen: new Date().toISOString(),
+          });
+
+        if (memberInsertError) {
+          toast({ title: "Sync warning", description: memberInsertError.message, variant: "destructive" });
+        }
+      }
+
+      setIsAdmin(room.created_by === user.id || existingMember?.role === "admin");
 
       // Load members
       const { data: mems } = await supabase
         .from("room_members")
         .select("*")
         .eq("room_id", room.id);
-      if (mems) setMembers(mems as RoomMember[]);
+      if (mems) setMembers(dedupeMembers(mems as RoomMember[]));
 
       // Load queue
       const { data: queueData } = await supabase
@@ -116,7 +201,7 @@ const Player = () => {
 
       if (queueData && queueData.length > 0) {
         setQueue(queueData.map((q: any) => ({
-          id: q.track_id,
+          id: q.track_id || `track-${q.id}`,
           name: q.name,
           artist: q.artist,
           url: q.url,
@@ -124,6 +209,8 @@ const Player = () => {
           youtubeId: q.youtube_id || undefined,
           duration: 0,
           dbId: q.id,
+          position: q.position,
+          addedBy: q.added_by,
         })));
       }
 
@@ -159,20 +246,17 @@ const Player = () => {
         (payload) => {
           if (payload.eventType === "INSERT") {
             const newMember = payload.new as RoomMember;
-            setMembers(prev => {
-              if (prev.find(m => m.id === newMember.id)) return prev;
-              return [...prev, newMember];
-            });
+            setMembers(prev => dedupeMembers([...prev, newMember]));
           } else if (payload.eventType === "UPDATE") {
             const updated = payload.new as RoomMember;
-            setMembers(prev => prev.map(m => m.id === updated.id ? updated : m));
+            setMembers(prev => dedupeMembers([...prev.filter(m => m.id !== updated.id), updated]));
             // Check if current user got promoted
             if (updated.user_id === user?.id && updated.role === "admin") {
               setIsAdmin(true);
             }
           } else if (payload.eventType === "DELETE") {
             const old = payload.old as { id: string };
-            setMembers(prev => prev.filter(m => m.id !== old.id));
+            setMembers(prev => dedupeMembers(prev.filter(m => m.id !== old.id)));
           }
         }
       )
@@ -194,16 +278,34 @@ const Player = () => {
           if (payload.eventType === "INSERT") {
             const q = payload.new as any;
             const newTrack: Track = {
-              id: q.track_id, name: q.name, artist: q.artist, url: q.url,
-              isLocal: q.is_local, youtubeId: q.youtube_id || undefined, duration: 0, dbId: q.id,
+              id: q.track_id || `track-${q.id}`,
+              name: q.name,
+              artist: q.artist,
+              url: q.url,
+              isLocal: q.is_local,
+              youtubeId: q.youtube_id || undefined,
+              duration: 0,
+              dbId: q.id,
+              position: q.position,
+              addedBy: q.added_by,
             };
             setQueue(prev => {
               if (prev.find(t => t.dbId === q.id)) return prev;
-              return [...prev, newTrack];
+              return [...prev, newTrack].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
             });
           } else if (payload.eventType === "DELETE") {
             const old = payload.old as { id: string };
-            setQueue(prev => prev.filter(t => t.dbId !== old.id));
+            setQueue(prev => {
+              const nextQueue = prev.filter(t => t.dbId !== old.id);
+              setCurrentTrackIndex(prevIndex => Math.max(0, Math.min(prevIndex, Math.max(0, nextQueue.length - 1))));
+              if (nextQueue.length === 0) {
+                setIsPlaying(false);
+                setProgress(0);
+                setCurrentSec(0);
+                setTotalDuration(0);
+              }
+              return nextQueue;
+            });
           }
         }
       )
@@ -337,22 +439,28 @@ const Player = () => {
   const handlePlayPause = () => {
     const next = !isPlaying;
     setIsPlaying(next);
-    syncPlaybackState({ is_playing: next, current_time_seconds: currentSec });
+    if (!currentTrack?.isLocal) {
+      syncPlaybackState({ is_playing: next, current_time_seconds: currentSec });
+    }
   };
 
   const handleNext = useCallback(() => {
     setProgress(0); setCurrentSec(0); setTotalDuration(0);
     const nextIdx = (currentTrackIndex + 1) % Math.max(queue.length, 1);
     setCurrentTrackIndex(nextIdx);
-    syncPlaybackState({ current_track_index: nextIdx, current_time_seconds: 0, is_playing: true });
-  }, [queue.length, currentTrackIndex, syncPlaybackState]);
+    if (!queue[nextIdx]?.isLocal) {
+      syncPlaybackState({ current_track_index: nextIdx, current_time_seconds: 0, is_playing: true });
+    }
+  }, [queue, currentTrackIndex, syncPlaybackState]);
 
   const handlePrev = useCallback(() => {
     setProgress(0); setCurrentSec(0); setTotalDuration(0);
     const prevIdx = (currentTrackIndex - 1 + Math.max(queue.length, 1)) % Math.max(queue.length, 1);
     setCurrentTrackIndex(prevIdx);
-    syncPlaybackState({ current_track_index: prevIdx, current_time_seconds: 0, is_playing: true });
-  }, [queue.length, currentTrackIndex, syncPlaybackState]);
+    if (!queue[prevIdx]?.isLocal) {
+      syncPlaybackState({ current_track_index: prevIdx, current_time_seconds: 0, is_playing: true });
+    }
+  }, [queue, currentTrackIndex, syncPlaybackState]);
 
   const handleSeek = (v: number[]) => {
     if (isYouTube && totalDuration) {
@@ -362,7 +470,9 @@ const Player = () => {
     } else if (audioRef.current && currentTrack) {
       const t = (v[0] / 100) * audioRef.current.duration;
       audioRef.current.currentTime = t; setProgress(v[0]); setCurrentSec(t);
-      syncPlaybackState({ current_time_seconds: t });
+      if (!currentTrack.isLocal) {
+        syncPlaybackState({ current_time_seconds: t });
+      }
     }
   };
 
@@ -391,10 +501,11 @@ const Player = () => {
       return;
     }
 
-    // Add to DB so other devices see it (though they can't play local files)
+    // Add metadata to DB so other devices can see the queue entry.
+    // Playback for local files remains device-only.
     for (let i = 0; i < newTracks.length; i++) {
       const t = newTracks[i];
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("room_queue")
         .insert({
           room_id: roomId,
@@ -408,10 +519,13 @@ const Player = () => {
         })
         .select()
         .single();
+      if (error) {
+        toast({ title: "Failed to add track", description: error.message, variant: "destructive" });
+        continue;
+      }
       if (data) t.dbId = data.id;
     }
 
-    setQueue(q => { const merged = [...q, ...newTracks]; if (q.length === 0) { setCurrentTrackIndex(0); setIsPlaying(true); syncPlaybackState({ is_playing: true, current_track_index: 0, current_time_seconds: 0 }); } return merged; });
     toast({ title: `${newTracks.length} track${newTracks.length > 1 ? "s" : ""} added` });
     e.target.value = "";
   };
@@ -419,9 +533,7 @@ const Player = () => {
   /* ── YouTube track add ── */
   const handleYoutubeAdd = async (track: { id: string; name: string; artist: string; url: string; youtubeId: string }) => {
     if (!roomId || !user) return;
-    const newTrack: Track = { ...track, duration: 0, isLocal: false };
-
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("room_queue")
       .insert({
         room_id: roomId,
@@ -437,17 +549,16 @@ const Player = () => {
       .select()
       .single();
 
-    if (data) newTrack.dbId = data.id;
+    if (error) {
+      toast({ title: "Failed to add YouTube track", description: error.message, variant: "destructive" });
+      return;
+    }
 
-    setQueue(q => {
-      const merged = [...q, newTrack];
-      if (q.length === 0) {
-        setCurrentTrackIndex(0);
-        setIsPlaying(true);
-        syncPlaybackState({ is_playing: true, current_track_index: 0, current_time_seconds: 0 });
-      }
-      return merged;
-    });
+    if (data && queue.length === 0) {
+      setCurrentTrackIndex(0);
+      setIsPlaying(true);
+      syncPlaybackState({ is_playing: true, current_track_index: 0, current_time_seconds: 0 });
+    }
   };
 
   const handleCopyCode = () => {
@@ -455,17 +566,12 @@ const Player = () => {
     toast({ title: "Copied!", description: "Room code copied to clipboard" });
   };
 
-  const removeTrack = async (id: string) => {
-    const track = queue.find(t => t.id === id);
-    if (track?.dbId) {
-      await supabase.from("room_queue").delete().eq("id", track.dbId);
+  const removeTrack = async (track: Track) => {
+    if (!track.dbId) return;
+    const { error } = await supabase.from("room_queue").delete().eq("id", track.dbId);
+    if (error) {
+      toast({ title: "Failed to remove track", description: error.message, variant: "destructive" });
     }
-    setQueue(q => {
-      const idx = q.findIndex(t => t.id === id);
-      const newQ = q.filter(t => t.id !== id);
-      if (idx <= currentTrackIndex && currentTrackIndex > 0) setCurrentTrackIndex(i => i - 1);
-      return newQ;
-    });
   };
 
   /* ─── render ─────────────────────────────────── */
@@ -712,8 +818,29 @@ const Player = () => {
               <div className="divide-y divide-border/30 max-h-72 overflow-y-auto">
                 {queue.map((track, idx) => (
                   <div
-                    key={track.id}
-                    onClick={() => { setCurrentTrackIndex(idx); setIsPlaying(true); setProgress(0); setCurrentSec(0); setTotalDuration(0); syncPlaybackState({ current_track_index: idx, is_playing: true, current_time_seconds: 0 }); }}
+                    key={track.dbId ?? `${track.id}-${idx}`}
+                    onClick={() => {
+                      setCurrentTrackIndex(idx);
+                      setProgress(0);
+                      setCurrentSec(0);
+                      setTotalDuration(0);
+
+                      if (track.isLocal) {
+                        setIsPlaying(true);
+                        if (track.addedBy !== user?.id) {
+                          setIsPlaying(false);
+                          toast({
+                            title: "Local file unavailable",
+                            description: "This local file can only play on the device that uploaded it.",
+                            variant: "destructive",
+                          });
+                        }
+                        return;
+                      }
+
+                      setIsPlaying(true);
+                      syncPlaybackState({ current_track_index: idx, is_playing: true, current_time_seconds: 0 });
+                    }}
                     className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${idx === currentTrackIndex ? "bg-primary/10" : "hover:bg-secondary/40"}`}
                   >
                     <div className="w-8 h-8 rounded-lg bg-secondary flex items-center justify-center shrink-0">
@@ -733,7 +860,7 @@ const Player = () => {
                       <p className={`text-sm font-medium truncate ${idx === currentTrackIndex ? "text-primary" : ""}`}>{track.name}</p>
                       <p className="text-xs text-muted-foreground truncate">{track.artist}</p>
                     </div>
-                    <Button variant="ghost" size="icon" className="w-7 h-7 shrink-0 text-muted-foreground hover:text-destructive" onClick={(e) => { e.stopPropagation(); removeTrack(track.id); }}>
+                    <Button variant="ghost" size="icon" className="w-7 h-7 shrink-0 text-muted-foreground hover:text-destructive" onClick={(e) => { e.stopPropagation(); removeTrack(track); }}>
                       <X className="w-3.5 h-3.5" />
                     </Button>
                   </div>

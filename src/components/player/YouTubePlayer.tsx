@@ -45,7 +45,7 @@ const YouTubePlayer = ({ onTrackAdd }: YouTubePlayerProps) => {
         const title = data.title || "YouTube Video";
         const author = data.author_name || "YouTube";
         onTrackAdd({
-          id: `yt-${videoId}`,
+          id: `yt-${videoId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           name: title,
           artist: author,
           url: `https://www.youtube.com/watch?v=${videoId}`,
@@ -57,7 +57,7 @@ const YouTubePlayer = ({ onTrackAdd }: YouTubePlayerProps) => {
       .catch(() => {
         // Fallback: add with generic name
         onTrackAdd({
-          id: `yt-${videoId}`,
+          id: `yt-${videoId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           name: "YouTube Video",
           artist: "YouTube",
           url: `https://www.youtube.com/watch?v=${videoId}`,
