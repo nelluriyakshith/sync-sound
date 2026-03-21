@@ -63,15 +63,20 @@ const Room = () => {
 
       if (roomErr) throw roomErr;
 
-      // Add creator as admin member
+      // Add creator as admin member (idempotent)
       const { error: memberErr } = await supabase
         .from("room_members")
-        .insert({
-          room_id: room.id,
-          user_id: user.id,
-          device_name: getDeviceName(),
-          role: "admin",
-        });
+        .upsert(
+          {
+            room_id: room.id,
+            user_id: user.id,
+            device_name: getDeviceName(),
+            role: "admin",
+            is_online: true,
+            last_seen: new Date().toISOString(),
+          },
+          { onConflict: "room_id,user_id" }
+        );
 
       if (memberErr) throw memberErr;
 
@@ -104,7 +109,7 @@ const Room = () => {
       // Validate room exists
       const { data: room, error: findErr } = await supabase
         .from("rooms")
-        .select("id")
+        .select("id, created_by")
         .eq("code", code)
         .eq("is_active", true)
         .maybeSingle();
@@ -116,10 +121,10 @@ const Room = () => {
         return;
       }
 
-      // Check if already a member
+      // Check if already a member (safe due unique room_id+user_id)
       const { data: existing } = await supabase
         .from("room_members")
-        .select("id")
+        .select("id, role")
         .eq("room_id", room.id)
         .eq("user_id", user.id)
         .maybeSingle();
@@ -138,7 +143,7 @@ const Room = () => {
             room_id: room.id,
             user_id: user.id,
             device_name: getDeviceName(),
-            role: "member",
+            role: room.created_by === user.id ? "admin" : "member",
           });
 
         if (joinErr) throw joinErr;
