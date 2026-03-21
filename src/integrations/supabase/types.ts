@@ -58,6 +58,94 @@ export type Database = {
           },
         ]
       }
+      room_playback_state: {
+        Row: {
+          current_time_seconds: number
+          current_track_index: number
+          id: string
+          is_playing: boolean
+          room_id: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          current_time_seconds?: number
+          current_track_index?: number
+          id?: string
+          is_playing?: boolean
+          room_id: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          current_time_seconds?: number
+          current_track_index?: number
+          id?: string
+          is_playing?: boolean
+          room_id?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "room_playback_state_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: true
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      room_queue: {
+        Row: {
+          added_by: string
+          artist: string
+          created_at: string
+          id: string
+          is_local: boolean
+          name: string
+          position: number
+          room_id: string
+          track_id: string
+          url: string
+          youtube_id: string | null
+        }
+        Insert: {
+          added_by: string
+          artist?: string
+          created_at?: string
+          id?: string
+          is_local?: boolean
+          name?: string
+          position?: number
+          room_id: string
+          track_id: string
+          url?: string
+          youtube_id?: string | null
+        }
+        Update: {
+          added_by?: string
+          artist?: string
+          created_at?: string
+          id?: string
+          is_local?: boolean
+          name?: string
+          position?: number
+          room_id?: string
+          track_id?: string
+          url?: string
+          youtube_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "room_queue_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       rooms: {
         Row: {
           code: string
