@@ -209,37 +209,45 @@ const Player = () => {
         return;
       }
 
-      const memberPayload: {
-        room_id: string;
-        user_id: string;
-        device_name: string;
-        is_online: boolean;
-        last_seen: string;
-        role?: string;
-      } = {
-        room_id: room.id,
-        user_id: user.id,
-        device_name: getDeviceName(),
-        is_online: true,
-        last_seen: new Date().toISOString(),
-      };
-
-      if (room.created_by === user.id) {
-        memberPayload.role = "admin";
-      }
-
-      const { data: memberRow, error: memberUpsertError } = await supabase
+      // Check if already a member
+      const { data: existingMember } = await supabase
         .from("room_members")
-        .upsert(memberPayload, { onConflict: "room_id,user_id" })
-        .select("role")
-        .single();
+        .select("id, role")
+        .eq("room_id", room.id)
+        .eq("user_id", user.id)
+        .maybeSingle();
 
-      if (memberUpsertError) {
-        toast({ title: "Sync warning", description: memberUpsertError.message, variant: "destructive" });
-        return;
+      let memberRole = existingMember?.role;
+
+      if (existingMember) {
+        await supabase
+          .from("room_members")
+          .update({
+            is_online: true,
+            device_name: getDeviceName(),
+            last_seen: new Date().toISOString(),
+          })
+          .eq("id", existingMember.id);
+      } else {
+        memberRole = room.created_by === user.id ? "admin" : "member";
+        const { error: insertErr } = await supabase
+          .from("room_members")
+          .insert({
+            room_id: room.id,
+            user_id: user.id,
+            device_name: getDeviceName(),
+            role: memberRole,
+            is_online: true,
+            last_seen: new Date().toISOString(),
+          });
+
+        if (insertErr) {
+          toast({ title: "Sync warning", description: insertErr.message, variant: "destructive" });
+          return;
+        }
       }
 
-      setIsAdmin(room.created_by === user.id || memberRow?.role === "admin");
+      setIsAdmin(room.created_by === user.id || memberRole === "admin");
       setRoomId(room.id);
 
       await Promise.all([
