@@ -39,6 +39,18 @@ interface RoomMember {
   last_seen: string;
 }
 
+interface QueueRow {
+  id: string;
+  track_id: string;
+  name: string;
+  artist: string;
+  url: string;
+  is_local: boolean;
+  youtube_id: string | null;
+  position: number;
+  added_by: string;
+}
+
 /* ─── helpers ───────────────────────────────── */
 const formatTime = (s: number) => {
   const m = Math.floor(s / 60);
@@ -89,6 +101,19 @@ const dedupeMembers = (memberList: RoomMember[]) => {
   return Array.from(byUser.values());
 };
 
+const mapQueueRowToTrack = (q: QueueRow): Track => ({
+  id: q.track_id || `track-${q.id}`,
+  name: q.name,
+  artist: q.artist,
+  url: q.url,
+  isLocal: q.is_local,
+  youtubeId: q.youtube_id || undefined,
+  duration: 0,
+  dbId: q.id,
+  position: q.position,
+  addedBy: q.added_by,
+});
+
 /* ─── component ─────────────────────────────── */
 const Player = () => {
   const { roomCode } = useParams<{ roomCode: string }>();
@@ -125,6 +150,47 @@ const Player = () => {
   const isYouTube = !!currentTrack?.youtubeId;
   const onlineMembers = members.filter(m => m.is_online);
 
+  const loadMembers = useCallback(async (targetRoomId: string) => {
+    const { data: mems } = await supabase
+      .from("room_members")
+      .select("*")
+      .eq("room_id", targetRoomId);
+
+    if (mems) setMembers(dedupeMembers(mems as RoomMember[]));
+  }, []);
+
+  const loadQueue = useCallback(async (targetRoomId: string) => {
+    const { data: queueData } = await supabase
+      .from("room_queue")
+      .select("*")
+      .eq("room_id", targetRoomId)
+      .order("position", { ascending: true });
+
+    const mapped = (queueData as QueueRow[] | null)?.map(mapQueueRowToTrack) ?? [];
+    setQueue(mapped);
+    setCurrentTrackIndex(prev => {
+      if (mapped.length === 0) return 0;
+      return Math.max(0, Math.min(prev, mapped.length - 1));
+    });
+  }, []);
+
+  const loadPlaybackState = useCallback(async (targetRoomId: string) => {
+    const { data: ps } = await supabase
+      .from("room_playback_state")
+      .select("*")
+      .eq("room_id", targetRoomId)
+      .maybeSingle();
+
+    if (!ps) return;
+    setCurrentTrackIndex(ps.current_track_index);
+    setIsPlaying(ps.is_playing);
+    if (ps.current_time_seconds >= 0) {
+      setCurrentSec(ps.current_time_seconds);
+      setYtSeekTo(ps.current_time_seconds);
+      if (audioRef.current) audioRef.current.currentTime = ps.current_time_seconds;
+    }
+  }, []);
+
   /* ── Load room, members, queue, and playback state ── */
   useEffect(() => {
     if (!roomCode || !user) return;
@@ -143,96 +209,48 @@ const Player = () => {
         return;
       }
 
+      const memberPayload: {
+        room_id: string;
+        user_id: string;
+        device_name: string;
+        is_online: boolean;
+        last_seen: string;
+        role?: string;
+      } = {
+        room_id: room.id,
+        user_id: user.id,
+        device_name: getDeviceName(),
+        is_online: true,
+        last_seen: new Date().toISOString(),
+      };
+
+      if (room.created_by === user.id) {
+        memberPayload.role = "admin";
+      }
+
+      const { data: memberRow, error: memberUpsertError } = await supabase
+        .from("room_members")
+        .upsert(memberPayload, { onConflict: "room_id,user_id" })
+        .select("role")
+        .single();
+
+      if (memberUpsertError) {
+        toast({ title: "Sync warning", description: memberUpsertError.message, variant: "destructive" });
+        return;
+      }
+
+      setIsAdmin(room.created_by === user.id || memberRow?.role === "admin");
       setRoomId(room.id);
 
-      // Ensure user is an online member when entering player (important for cross-device sync)
-      const { data: existingMember } = await supabase
-        .from("room_members")
-        .select("id, role")
-        .eq("room_id", room.id)
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (existingMember) {
-        const { error: memberUpdateError } = await supabase
-          .from("room_members")
-          .update({
-            is_online: true,
-            device_name: getDeviceName(),
-            last_seen: new Date().toISOString(),
-          })
-          .eq("id", existingMember.id);
-
-        if (memberUpdateError) {
-          toast({ title: "Sync warning", description: memberUpdateError.message, variant: "destructive" });
-        }
-      } else {
-        const { error: memberInsertError } = await supabase
-          .from("room_members")
-          .insert({
-            room_id: room.id,
-            user_id: user.id,
-            device_name: getDeviceName(),
-            role: room.created_by === user.id ? "admin" : "member",
-            is_online: true,
-            last_seen: new Date().toISOString(),
-          });
-
-        if (memberInsertError) {
-          toast({ title: "Sync warning", description: memberInsertError.message, variant: "destructive" });
-        }
-      }
-
-      setIsAdmin(room.created_by === user.id || existingMember?.role === "admin");
-
-      // Load members
-      const { data: mems } = await supabase
-        .from("room_members")
-        .select("*")
-        .eq("room_id", room.id);
-      if (mems) setMembers(dedupeMembers(mems as RoomMember[]));
-
-      // Load queue
-      const { data: queueData } = await supabase
-        .from("room_queue")
-        .select("*")
-        .eq("room_id", room.id)
-        .order("position", { ascending: true });
-
-      if (queueData && queueData.length > 0) {
-        setQueue(queueData.map((q: any) => ({
-          id: q.track_id || `track-${q.id}`,
-          name: q.name,
-          artist: q.artist,
-          url: q.url,
-          isLocal: q.is_local,
-          youtubeId: q.youtube_id || undefined,
-          duration: 0,
-          dbId: q.id,
-          position: q.position,
-          addedBy: q.added_by,
-        })));
-      }
-
-      // Load playback state
-      const { data: ps } = await supabase
-        .from("room_playback_state")
-        .select("*")
-        .eq("room_id", room.id)
-        .maybeSingle();
-
-      if (ps) {
-        setCurrentTrackIndex(ps.current_track_index);
-        setIsPlaying(ps.is_playing);
-        if (ps.current_time_seconds > 0) {
-          setCurrentSec(ps.current_time_seconds);
-          setYtSeekTo(ps.current_time_seconds);
-        }
-      }
+      await Promise.all([
+        loadMembers(room.id),
+        loadQueue(room.id),
+        loadPlaybackState(room.id),
+      ]);
     };
 
     loadRoom();
-  }, [roomCode, user, navigate, toast]);
+  }, [roomCode, user, navigate, toast, loadMembers, loadQueue, loadPlaybackState]);
 
   /* ── Real-time subscription for members ── */
   useEffect(() => {
@@ -243,27 +261,14 @@ const Player = () => {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          if (payload.eventType === "INSERT") {
-            const newMember = payload.new as RoomMember;
-            setMembers(prev => dedupeMembers([...prev, newMember]));
-          } else if (payload.eventType === "UPDATE") {
-            const updated = payload.new as RoomMember;
-            setMembers(prev => dedupeMembers([...prev.filter(m => m.id !== updated.id), updated]));
-            // Check if current user got promoted
-            if (updated.user_id === user?.id && updated.role === "admin") {
-              setIsAdmin(true);
-            }
-          } else if (payload.eventType === "DELETE") {
-            const old = payload.old as { id: string };
-            setMembers(prev => dedupeMembers(prev.filter(m => m.id !== old.id)));
-          }
+        async () => {
+          await loadMembers(roomId);
         }
       )
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [roomId, user]);
+  }, [roomId, loadMembers]);
 
   /* ── Real-time subscription for queue ── */
   useEffect(() => {
@@ -274,45 +279,14 @@ const Player = () => {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_queue", filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          if (payload.eventType === "INSERT") {
-            const q = payload.new as any;
-            const newTrack: Track = {
-              id: q.track_id || `track-${q.id}`,
-              name: q.name,
-              artist: q.artist,
-              url: q.url,
-              isLocal: q.is_local,
-              youtubeId: q.youtube_id || undefined,
-              duration: 0,
-              dbId: q.id,
-              position: q.position,
-              addedBy: q.added_by,
-            };
-            setQueue(prev => {
-              if (prev.find(t => t.dbId === q.id)) return prev;
-              return [...prev, newTrack].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-            });
-          } else if (payload.eventType === "DELETE") {
-            const old = payload.old as { id: string };
-            setQueue(prev => {
-              const nextQueue = prev.filter(t => t.dbId !== old.id);
-              setCurrentTrackIndex(prevIndex => Math.max(0, Math.min(prevIndex, Math.max(0, nextQueue.length - 1))));
-              if (nextQueue.length === 0) {
-                setIsPlaying(false);
-                setProgress(0);
-                setCurrentSec(0);
-                setTotalDuration(0);
-              }
-              return nextQueue;
-            });
-          }
+        async () => {
+          await loadQueue(roomId);
         }
       )
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [roomId]);
+  }, [roomId, loadQueue]);
 
   /* ── Real-time subscription for playback state ── */
   useEffect(() => {
@@ -332,7 +306,7 @@ const Player = () => {
           if (ps.updated_by === user?.id) return; // ignore own updates
           setCurrentTrackIndex(ps.current_track_index);
           setIsPlaying(ps.is_playing);
-          if (ps.current_time_seconds > 0) {
+          if (ps.current_time_seconds >= 0) {
             setCurrentSec(ps.current_time_seconds);
             setYtSeekTo(ps.current_time_seconds);
             if (audioRef.current) {
@@ -345,6 +319,19 @@ const Player = () => {
 
     return () => { supabase.removeChannel(channel); };
   }, [roomId, user]);
+
+  /* ── Fallback refresh (protects against dropped realtime events) ── */
+  useEffect(() => {
+    if (!roomId) return;
+
+    const interval = setInterval(() => {
+      loadMembers(roomId);
+      loadQueue(roomId);
+      loadPlaybackState(roomId);
+    }, 3500);
+
+    return () => clearInterval(interval);
+  }, [roomId, loadMembers, loadQueue, loadPlaybackState]);
 
   /* ── Sync playback state to DB ── */
   const syncPlaybackState = useCallback(async (overrides?: { is_playing?: boolean; current_track_index?: number; current_time_seconds?: number }) => {
@@ -526,6 +513,8 @@ const Player = () => {
       if (data) t.dbId = data.id;
     }
 
+    await loadQueue(roomId);
+
     toast({ title: `${newTracks.length} track${newTracks.length > 1 ? "s" : ""} added` });
     e.target.value = "";
   };
@@ -559,6 +548,8 @@ const Player = () => {
       setIsPlaying(true);
       syncPlaybackState({ is_playing: true, current_track_index: 0, current_time_seconds: 0 });
     }
+
+    await loadQueue(roomId);
   };
 
   const handleCopyCode = () => {
@@ -571,7 +562,10 @@ const Player = () => {
     const { error } = await supabase.from("room_queue").delete().eq("id", track.dbId);
     if (error) {
       toast({ title: "Failed to remove track", description: error.message, variant: "destructive" });
+      return;
     }
+
+    await loadQueue(roomId!);
   };
 
   /* ─── render ─────────────────────────────────── */
