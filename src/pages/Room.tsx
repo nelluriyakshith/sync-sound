@@ -66,17 +66,14 @@ const Room = () => {
       // Add creator as admin member (idempotent)
       const { error: memberErr } = await supabase
         .from("room_members")
-        .upsert(
-          {
-            room_id: room.id,
-            user_id: user.id,
-            device_name: getDeviceName(),
-            role: "admin",
-            is_online: true,
-            last_seen: new Date().toISOString(),
-          },
-          { onConflict: "room_id,user_id" }
-        );
+        .insert({
+          room_id: room.id,
+          user_id: user.id,
+          device_name: getDeviceName(),
+          role: "admin",
+          is_online: true,
+          last_seen: new Date().toISOString(),
+        });
 
       if (memberErr) throw memberErr;
 
