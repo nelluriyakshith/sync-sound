@@ -5,7 +5,7 @@ import { Slider } from "@/components/ui/slider";
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   Users, Copy, ArrowLeft, Wifi, Upload, Music, ListMusic, X, CheckCircle2, Youtube,
-  Shield, UserMinus, VolumeOff, Volume1, ShieldPlus
+  Shield, UserMinus, VolumeOff, Volume1, ShieldPlus, RefreshCw
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
@@ -146,6 +146,8 @@ const Player = () => {
   /* flag to prevent echo when we ourselves update playback state */
   const isLocalUpdate = useRef(false);
 
+  const [isSyncing, setIsSyncing] = useState(false);
+
   const currentTrack = queue[currentTrackIndex] ?? null;
   const isYouTube = !!currentTrack?.youtubeId;
   const onlineMembers = members.filter(m => m.is_online);
@@ -190,6 +192,23 @@ const Player = () => {
       if (audioRef.current) audioRef.current.currentTime = ps.current_time_seconds;
     }
   }, []);
+
+  const handleManualSync = useCallback(async () => {
+    if (!roomId) return;
+    setIsSyncing(true);
+    try {
+      await Promise.all([
+        loadMembers(roomId),
+        loadQueue(roomId),
+        loadPlaybackState(roomId),
+      ]);
+      toast({ title: "Synced!", description: "All data refreshed from room" });
+    } catch {
+      toast({ title: "Sync failed", variant: "destructive" });
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [roomId, loadMembers, loadQueue, loadPlaybackState, toast]);
 
   /* ── Load room, members, queue, and playback state ── */
   useEffect(() => {
@@ -884,9 +903,21 @@ const Player = () => {
               <p className="text-[10px] text-muted-foreground">Room: {roomCode}</p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 text-muted-foreground">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 h-7 px-2 text-xs"
+              onClick={handleManualSync}
+              disabled={isSyncing}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin" : ""}`} />
+              {isSyncing ? "Syncing..." : "Sync"}
+            </Button>
+            <div className="flex items-center gap-1.5 text-muted-foreground">
             <Users className="w-3.5 h-3.5" />
             <span className="text-xs font-medium">{onlineMembers.length} device{onlineMembers.length !== 1 ? "s" : ""}</span>
+            </div>
           </div>
         </div>
       </div>
