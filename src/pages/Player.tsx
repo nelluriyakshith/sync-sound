@@ -153,43 +153,62 @@ const Player = () => {
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [needsPlaybackUnlock, setNeedsPlaybackUnlock] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const legacyQueueWarningShown = useRef(false);
+  const syncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const currentTrack = queue[currentTrackIndex] ?? null;
   const isYouTube = !!currentTrack?.youtubeId;
   const onlineMembers = members.filter(m => m.is_online);
 
   const loadMembers = useCallback(async (targetRoomId: string) => {
-    const { data: mems } = await supabase
+    const { data: mems, error } = await supabase
       .from("room_members")
       .select("*")
       .eq("room_id", targetRoomId);
 
+    if (error) throw error;
     if (mems) setMembers(dedupeMembers(mems as RoomMember[]));
   }, []);
 
   const loadQueue = useCallback(async (targetRoomId: string) => {
-    const { data: queueData } = await supabase
+    const { data: queueData, error } = await supabase
       .from("room_queue")
       .select("*")
       .eq("room_id", targetRoomId)
       .order("position", { ascending: true });
 
-    const mapped = (queueData as QueueRow[] | null)?.map(mapQueueRowToTrack) ?? [];
+    if (error) throw error;
+
+    const rows = (queueData as QueueRow[] | null) ?? [];
+    const validRows = rows.filter((row) => Boolean(row.youtube_id || row.url));
+    if (rows.length !== validRows.length && !legacyQueueWarningShown.current) {
+      legacyQueueWarningShown.current = true;
+      toast({
+        title: "Old local tracks skipped",
+        description: "Some legacy tracks were added before shared uploads and are unavailable on all devices.",
+      });
+    }
+
+    const mapped = validRows.map(mapQueueRowToTrack);
     setQueue(mapped);
     setCurrentTrackIndex(prev => {
       if (mapped.length === 0) return 0;
       return Math.max(0, Math.min(prev, mapped.length - 1));
     });
-  }, []);
+  }, [toast]);
 
   const loadPlaybackState = useCallback(async (targetRoomId: string) => {
-    const { data: ps } = await supabase
+    const { data: ps, error } = await supabase
       .from("room_playback_state")
       .select("*")
       .eq("room_id", targetRoomId)
       .maybeSingle();
 
+    if (error) throw error;
     if (!ps) return;
+
     setCurrentTrackIndex(ps.current_track_index);
     setIsPlaying(ps.is_playing);
     if (ps.current_time_seconds >= 0) {
@@ -199,22 +218,41 @@ const Player = () => {
     }
   }, []);
 
+  const syncAllRoomData = useCallback(async (targetRoomId: string, silent = false) => {
+    const results = await Promise.allSettled([
+      loadMembers(targetRoomId),
+      loadQueue(targetRoomId),
+      loadPlaybackState(targetRoomId),
+    ]);
+
+    const hasFailures = results.some((result) => result.status === "rejected");
+    if (hasFailures) {
+      if (!silent) {
+        toast({
+          title: "Sync failed",
+          description: "Could not refresh room data. Please tap Sync again.",
+          variant: "destructive",
+        });
+      }
+      return false;
+    }
+
+    setLastSyncAt(new Date().toLocaleTimeString());
+    return true;
+  }, [loadMembers, loadQueue, loadPlaybackState, toast]);
+
   const handleManualSync = useCallback(async () => {
     if (!roomId) return;
     setIsSyncing(true);
     try {
-      await Promise.all([
-        loadMembers(roomId),
-        loadQueue(roomId),
-        loadPlaybackState(roomId),
-      ]);
-      toast({ title: "Synced!", description: "All data refreshed from room" });
-    } catch {
-      toast({ title: "Sync failed", variant: "destructive" });
+      const ok = await syncAllRoomData(roomId);
+      if (ok) {
+        toast({ title: "Synced!", description: "All data refreshed from room" });
+      }
     } finally {
       setIsSyncing(false);
     }
-  }, [roomId, loadMembers, loadQueue, loadPlaybackState, toast]);
+  }, [roomId, syncAllRoomData, toast]);
 
   /* ── Load room, members, queue, and playback state ── */
   useEffect(() => {
@@ -275,84 +313,71 @@ const Player = () => {
       setIsAdmin(room.created_by === user.id || memberRole === "admin");
       setRoomId(room.id);
 
-      await Promise.all([
-        loadMembers(room.id),
-        loadQueue(room.id),
-        loadPlaybackState(room.id),
-      ]);
+      await syncAllRoomData(room.id);
     };
 
     loadRoom();
-  }, [roomCode, user, navigate, toast, loadMembers, loadQueue, loadPlaybackState]);
+  }, [roomCode, user, navigate, toast, syncAllRoomData]);
 
-  /* ── Real-time subscription for members ── */
+  /* ── Real-time subscription for members/queue/playback ── */
   useEffect(() => {
     if (!roomId) return;
 
+    const scheduleSync = () => {
+      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current);
+      syncDebounceRef.current = setTimeout(() => {
+        syncAllRoomData(roomId, true);
+      }, 250);
+    };
+
     const channel = supabase
-      .channel(`room-members-${roomId}`)
+      .channel(`room-sync-${roomId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` },
-        async () => {
-          await loadMembers(roomId);
-        }
+        scheduleSync
       )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [roomId, loadMembers]);
-
-  /* ── Real-time subscription for queue ── */
-  useEffect(() => {
-    if (!roomId) return;
-
-    const channel = supabase
-      .channel(`room-queue-${roomId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_queue", filter: `room_id=eq.${roomId}` },
-        async () => {
-          await loadQueue(roomId);
-        }
+        scheduleSync
       )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [roomId, loadQueue]);
-
-  /* ── Real-time subscription for playback state ── */
-  useEffect(() => {
-    if (!roomId) return;
-
-    const channel = supabase
-      .channel(`room-playback-${roomId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_playback_state", filter: `room_id=eq.${roomId}` },
-        async (payload) => {
-          const ps = payload.new as any;
-          if (ps?.updated_by && ps.updated_by === user?.id) return;
-          await loadPlaybackState(roomId);
-        }
+        scheduleSync
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          scheduleSync();
+        }
+      });
 
-    return () => { supabase.removeChannel(channel); };
-  }, [roomId, user, loadPlaybackState]);
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        syncAllRoomData(roomId, true);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current);
+      supabase.removeChannel(channel);
+    };
+  }, [roomId, syncAllRoomData]);
 
   /* ── Fallback refresh (protects against dropped realtime events) ── */
   useEffect(() => {
     if (!roomId) return;
 
     const interval = setInterval(() => {
-      loadMembers(roomId);
-      loadQueue(roomId);
-      loadPlaybackState(roomId);
+      syncAllRoomData(roomId, true);
     }, 3500);
 
     return () => clearInterval(interval);
-  }, [roomId, loadMembers, loadQueue, loadPlaybackState]);
+  }, [roomId, syncAllRoomData]);
 
   /* ── Sync playback state to DB ── */
   const syncPlaybackState = useCallback(async (overrides?: { is_playing?: boolean; current_track_index?: number; current_time_seconds?: number }) => {
@@ -369,6 +394,20 @@ const Player = () => {
       .from("room_playback_state")
       .upsert(data, { onConflict: "room_id" });
   }, [roomId, user, isPlaying, currentTrackIndex, currentSec]);
+
+  const tryStartLocalPlayback = useCallback(async () => {
+    if (!audioRef.current) return false;
+    try {
+      await audioRef.current.play();
+      setNeedsPlaybackUnlock(false);
+      return true;
+    } catch (err: any) {
+      if (err?.name === "NotAllowedError") {
+        setNeedsPlaybackUnlock(true);
+      }
+      return false;
+    }
+  }, []);
 
   /* ── Mark offline on unmount ── */
   useEffect(() => {
@@ -408,6 +447,8 @@ const Player = () => {
   useEffect(() => {
     if (!currentTrack || isYouTube) return;
     const audio = new Audio(currentTrack.url);
+    audio.preload = "auto";
+    audio.crossOrigin = "anonymous";
     audio.volume = isMuted ? 0 : volume[0] / 100;
     audioRef.current = audio;
 
@@ -416,17 +457,34 @@ const Player = () => {
       setTotalDuration(audio.duration || 0);
       setProgress((audio.currentTime / audio.duration) * 100 || 0);
     };
+    const onLoadedMetadata = () => {
+      setTotalDuration(audio.duration || 0);
+    };
     const onEnded = () => handleNext();
+    const onError = () => {
+      setIsPlaying(false);
+      toast({
+        title: "Playback issue",
+        description: "This track could not play on this device. Try Sync or switch to another track.",
+        variant: "destructive",
+      });
+    };
 
     audio.addEventListener("timeupdate", onTimeUpdate);
+    audio.addEventListener("loadedmetadata", onLoadedMetadata);
     audio.addEventListener("ended", onEnded);
+    audio.addEventListener("error", onError);
 
-    if (isPlaying) audio.play().catch(() => {});
+    if (isPlaying) {
+      tryStartLocalPlayback();
+    }
 
     return () => {
       audio.pause();
       audio.removeEventListener("timeupdate", onTimeUpdate);
+      audio.removeEventListener("loadedmetadata", onLoadedMetadata);
       audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("error", onError);
       audioRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -440,8 +498,33 @@ const Player = () => {
   /* ── play/pause (local) ── */
   useEffect(() => {
     if (!audioRef.current || isYouTube) return;
-    isPlaying ? audioRef.current.play().catch(() => {}) : audioRef.current.pause();
-  }, [isPlaying, isYouTube]);
+    if (isPlaying) {
+      tryStartLocalPlayback();
+      return;
+    }
+
+    audioRef.current.pause();
+  }, [isPlaying, isYouTube, tryStartLocalPlayback]);
+
+  const handleUnlockAudio = async () => {
+    const started = await tryStartLocalPlayback();
+    if (!started) {
+      toast({
+        title: "Tap play to unlock audio",
+        description: "Your browser requires one interaction before audio can start.",
+      });
+      return;
+    }
+
+    setIsPlaying(true);
+    if (currentTrack && !currentTrack.isLocal) {
+      await syncPlaybackState({
+        is_playing: true,
+        current_time_seconds: audioRef.current?.currentTime ?? currentSec,
+      });
+    }
+    toast({ title: "Audio unlocked", description: "This device is now synced for playback" });
+  };
 
   const handlePlayPause = () => {
     const next = !isPlaying;
@@ -745,6 +828,17 @@ const Player = () => {
               </Button>
               <Slider value={isMuted ? [0] : volume} onValueChange={(v) => { setVolume(v); setIsMuted(false); }} max={100} step={1} />
             </div>
+
+            {needsPlaybackUnlock && !isYouTube && currentTrack && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="w-full"
+                onClick={handleUnlockAudio}
+              >
+                Tap once to enable sound on this device
+              </Button>
+            )}
           </div>
         </div>
 
@@ -938,7 +1032,9 @@ const Player = () => {
             </div>
             <div>
               <p className="text-xs font-medium">Synced · Real-time</p>
-              <p className="text-[10px] text-muted-foreground">Room: {roomCode}</p>
+              <p className="text-[10px] text-muted-foreground">
+                Room: {roomCode}{lastSyncAt ? ` · Updated ${lastSyncAt}` : ""}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-3">
