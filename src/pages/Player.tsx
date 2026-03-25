@@ -79,6 +79,14 @@ const getDeviceName = () => {
   return "Device";
 };
 
+const sanitizeFileName = (name: string) =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "track";
+
 const dedupeMembers = (memberList: RoomMember[]) => {
   const byUser = new Map<string, RoomMember>();
   memberList.forEach((member) => {
@@ -143,10 +151,8 @@ const Player = () => {
   const [isAdmin, setIsAdmin] = useState(false);
   const [showDevices, setShowDevices] = useState(false);
 
-  /* flag to prevent echo when we ourselves update playback state */
-  const isLocalUpdate = useRef(false);
-
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   const currentTrack = queue[currentTrackIndex] ?? null;
   const isYouTube = !!currentTrack?.youtubeId;
@@ -324,28 +330,16 @@ const Player = () => {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_playback_state", filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          if (isLocalUpdate.current) {
-            isLocalUpdate.current = false;
-            return;
-          }
+        async (payload) => {
           const ps = payload.new as any;
-          if (ps.updated_by === user?.id) return; // ignore own updates
-          setCurrentTrackIndex(ps.current_track_index);
-          setIsPlaying(ps.is_playing);
-          if (ps.current_time_seconds >= 0) {
-            setCurrentSec(ps.current_time_seconds);
-            setYtSeekTo(ps.current_time_seconds);
-            if (audioRef.current) {
-              audioRef.current.currentTime = ps.current_time_seconds;
-            }
-          }
+          if (ps?.updated_by && ps.updated_by === user?.id) return;
+          await loadPlaybackState(roomId);
         }
       )
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [roomId, user]);
+  }, [roomId, user, loadPlaybackState]);
 
   /* ── Fallback refresh (protects against dropped realtime events) ── */
   useEffect(() => {
@@ -371,7 +365,6 @@ const Player = () => {
       updated_at: new Date().toISOString(),
       updated_by: user.id,
     };
-    isLocalUpdate.current = true;
     await supabase
       .from("room_playback_state")
       .upsert(data, { onConflict: "room_id" });
@@ -498,52 +491,97 @@ const Player = () => {
 
   const handleYtReady = useCallback((dur: number) => { setTotalDuration(dur); }, []);
 
-  /* ── local file upload ── */
+  /* ── shared audio upload (cross-device) ── */
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (!files.length || !roomId || !user) return;
-    const newTracks: Track[] = files
-      .filter(f => f.type.startsWith("audio/"))
-      .map(f => {
-        const url = URL.createObjectURL(f);
-        const name = f.name.replace(/\.[^.]+$/, "");
-        const parts = name.split(" - ");
-        return { id: `${f.name}-${f.lastModified}`, name: parts[1] ?? name, artist: parts[0] ?? "Unknown Artist", duration: 0, url, isLocal: true };
-      });
-    if (!newTracks.length) {
+    const audioFiles = files.filter(f => f.type.startsWith("audio/"));
+
+    if (!audioFiles.length) {
       toast({ title: "No audio files", description: "Please select valid audio files", variant: "destructive" });
       return;
     }
 
-    // Add metadata to DB so other devices can see the queue entry.
-    // Playback for local files remains device-only.
-    for (let i = 0; i < newTracks.length; i++) {
-      const t = newTracks[i];
-      const { data, error } = await supabase
-        .from("room_queue")
-        .insert({
+    setIsUploading(true);
+
+    try {
+      const queueRows: {
+        room_id: string;
+        track_id: string;
+        name: string;
+        artist: string;
+        url: string;
+        is_local: boolean;
+        position: number;
+        added_by: string;
+      }[] = [];
+
+      for (let i = 0; i < audioFiles.length; i++) {
+        const file = audioFiles[i];
+        const cleanName = file.name.replace(/\.[^.]+$/, "");
+        const parts = cleanName.split(" - ");
+        const artist = parts[0] ?? "Unknown Artist";
+        const name = parts[1] ?? cleanName;
+
+        const trackId = `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`;
+        const objectPath = `${user.id}/${roomId}/${Date.now()}-${i}-${sanitizeFileName(file.name)}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("room-audio")
+          .upload(objectPath, file, {
+            upsert: false,
+            contentType: file.type || "audio/mpeg",
+            cacheControl: "3600",
+          });
+
+        if (uploadError) {
+          toast({ title: `Upload failed (${file.name})`, description: uploadError.message, variant: "destructive" });
+          continue;
+        }
+
+        const { data: publicUrlData } = supabase.storage.from("room-audio").getPublicUrl(objectPath);
+
+        if (!publicUrlData?.publicUrl) {
+          toast({ title: `Upload failed (${file.name})`, description: "Could not create playback URL", variant: "destructive" });
+          continue;
+        }
+
+        queueRows.push({
           room_id: roomId,
-          track_id: t.id,
-          name: t.name,
-          artist: t.artist,
-          url: "",
-          is_local: true,
-          position: queue.length + i,
+          track_id: trackId,
+          name,
+          artist,
+          url: publicUrlData.publicUrl,
+          is_local: false,
+          position: queue.length + queueRows.length,
           added_by: user.id,
-        })
-        .select()
-        .single();
-      if (error) {
-        toast({ title: "Failed to add track", description: error.message, variant: "destructive" });
-        continue;
+        });
       }
-      if (data) t.dbId = data.id;
+
+      if (!queueRows.length) return;
+
+      const { error: insertError } = await supabase.from("room_queue").insert(queueRows);
+
+      if (insertError) {
+        toast({ title: "Failed to add uploaded tracks", description: insertError.message, variant: "destructive" });
+        return;
+      }
+
+      if (queue.length === 0) {
+        setCurrentTrackIndex(0);
+        setIsPlaying(true);
+        await syncPlaybackState({ is_playing: true, current_track_index: 0, current_time_seconds: 0 });
+      }
+
+      await loadQueue(roomId);
+      toast({
+        title: `${queueRows.length} track${queueRows.length > 1 ? "s" : ""} uploaded`,
+        description: "Now available on all devices in this room",
+      });
+    } finally {
+      setIsUploading(false);
+      e.target.value = "";
     }
-
-    await loadQueue(roomId);
-
-    toast({ title: `${newTracks.length} track${newTracks.length > 1 ? "s" : ""} added` });
-    e.target.value = "";
   };
 
   /* ── YouTube track add ── */
@@ -716,8 +754,8 @@ const Player = () => {
             <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
               <Upload className="w-4 h-4 text-primary" />
             </div>
-            <span className="text-[10px] font-medium text-center">Local</span>
-            <input type="file" accept="audio/*" multiple className="hidden" onChange={handleFileUpload} />
+            <span className="text-[10px] font-medium text-center">{isUploading ? "Uploading..." : "Shared"}</span>
+            <input type="file" accept="audio/*" multiple className="hidden" onChange={handleFileUpload} disabled={isUploading} />
           </label>
 
           <button
