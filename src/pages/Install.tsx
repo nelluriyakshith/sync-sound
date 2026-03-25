@@ -1,43 +1,78 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Download, CheckCircle2, Share, MoreVertical, Smartphone } from "lucide-react";
+import { Download, CheckCircle2, Share, MoreVertical, Smartphone, FolderDown, LaptopMinimalCheck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
+
+type InstallPlatform = "ios" | "android" | "desktop";
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
+
+declare global {
+  interface Navigator {
+    standalone?: boolean;
+  }
+
+  interface Window {
+    showSaveFilePicker?: (options?: {
+      suggestedName?: string;
+      excludeAcceptAllOption?: boolean;
+      types?: Array<{
+        description?: string;
+        accept: Record<string, string[]>;
+      }>;
+    }) => Promise<{
+      createWritable: () => Promise<{
+        write: (data: string) => Promise<void>;
+        close: () => Promise<void>;
+      }>;
+    }>;
+  }
+}
 
 const Install = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
-  const [platform, setPlatform] = useState<'ios' | 'android' | 'desktop'>('desktop');
+  const [platform, setPlatform] = useState<InstallPlatform>("desktop");
+  const [isSavingShortcut, setIsSavingShortcut] = useState(false);
+
+  const canChooseSaveLocation = useMemo(() => typeof window.showSaveFilePicker === "function", []);
+  const isDesktop = platform === "desktop";
 
   useEffect(() => {
     const userAgent = window.navigator.userAgent.toLowerCase();
-    if (/iphone|ipad|ipod/.test(userAgent)) setPlatform('ios');
-    else if (/android/.test(userAgent)) setPlatform('android');
-    else setPlatform('desktop');
+    if (/iphone|ipad|ipod/.test(userAgent)) setPlatform("ios");
+    else if (/android/.test(userAgent)) setPlatform("android");
+    else setPlatform("desktop");
 
-    if (window.matchMedia('(display-mode: standalone)').matches) {
+    if (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone) {
       setIsInstalled(true);
     }
 
     const handleBeforeInstall = (e: Event) => {
       e.preventDefault();
-      setDeferredPrompt(e);
+      setDeferredPrompt(e as BeforeInstallPromptEvent);
     };
 
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-  }, []);
+    const handleInstalled = () => {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+    };
 
-  // Auto-trigger install prompt when available
-  useEffect(() => {
-    if (deferredPrompt && !isInstalled) {
-      triggerInstall();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deferredPrompt]);
+    window.addEventListener("beforeinstallprompt", handleBeforeInstall);
+    window.addEventListener("appinstalled", handleInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
+      window.removeEventListener("appinstalled", handleInstalled);
+    };
+  }, []);
 
   const triggerInstall = useCallback(async () => {
     if (!deferredPrompt) {
@@ -48,12 +83,61 @@ const Install = () => {
     deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;
 
-    if (outcome === 'accepted') {
+    if (outcome === "accepted") {
       setIsInstalled(true);
-      toast({ title: "App installed!", description: "Find Sync Sound on your home screen" });
+      toast({ title: "Installed!", description: "Sync Sound is now on your home screen and in recent apps" });
     }
     setDeferredPrompt(null);
   }, [deferredPrompt, toast]);
+
+  const saveDesktopShortcut = useCallback(async () => {
+    if (!isDesktop) return;
+
+    setIsSavingShortcut(true);
+    const shortcutContents = `[InternetShortcut]\nURL=${window.location.origin}\nIconFile=${window.location.origin}/pwa-192x192.png\nIconIndex=0\n`;
+
+    try {
+      if (window.showSaveFilePicker) {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: "Sync Sound.url",
+          types: [{
+            description: "Web shortcut",
+            accept: {
+              "application/internet-shortcut": [".url"],
+              "text/plain": [".url"],
+            },
+          }],
+        });
+
+        const writable = await handle.createWritable();
+        await writable.write(shortcutContents);
+        await writable.close();
+      } else {
+        const blob = new Blob([shortcutContents], { type: "text/plain" });
+        const href = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = href;
+        anchor.download = "Sync Sound.url";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(href);
+      }
+
+      toast({
+        title: "Shortcut downloaded",
+        description: "Open the saved file to launch Sync Sound quickly from your desktop",
+      });
+    } catch {
+      toast({
+        title: "Download cancelled",
+        description: "No changes were made",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingShortcut(false);
+    }
+  }, [isDesktop, toast]);
 
   if (isInstalled) {
     return (
@@ -85,15 +169,42 @@ const Install = () => {
             <div>
               <h1 className="text-2xl font-bold font-display mb-2">Install Sync Sound</h1>
               <p className="text-muted-foreground text-sm">
-                {deferredPrompt
-                  ? "Tap below to install instantly!"
-                  : platform === 'ios'
-                    ? "Follow the steps below to install"
-                    : "Use your browser menu to install"}
+                {isDesktop
+                  ? "Save a quick-launch shortcut or install the full app in one click"
+                  : deferredPrompt
+                    ? "Tap once to install instantly"
+                    : platform === "ios"
+                      ? "Follow the simple iPhone steps below"
+                      : "Use your browser menu to install"}
               </p>
             </div>
 
-            {deferredPrompt && (
+            {isDesktop && (
+              <div className="space-y-3">
+                <Button
+                  onClick={saveDesktopShortcut}
+                  size="lg"
+                  variant="outline"
+                  className="w-full gap-2"
+                  disabled={isSavingShortcut}
+                >
+                  <FolderDown className="w-5 h-5" />
+                  {isSavingShortcut ? "Opening save dialog..." : canChooseSaveLocation ? "Choose save location" : "Download shortcut"}
+                </Button>
+
+                {deferredPrompt && (
+                  <Button
+                    onClick={triggerInstall}
+                    size="lg"
+                    className="w-full gap-2 bg-gradient-to-r from-[hsl(var(--gradient-from))] via-[hsl(var(--gradient-via))] to-[hsl(var(--gradient-to))] text-primary-foreground font-display font-semibold"
+                  >
+                    <LaptopMinimalCheck className="w-5 h-5" /> Install Desktop App
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {!isDesktop && deferredPrompt && (
               <Button
                 onClick={triggerInstall}
                 size="lg"
@@ -103,7 +214,7 @@ const Install = () => {
               </Button>
             )}
 
-            {!deferredPrompt && platform === 'ios' && (
+            {!deferredPrompt && platform === "ios" && (
               <div className="text-left space-y-3">
                 <p className="text-sm font-semibold flex items-center gap-2">
                   <Share className="w-4 h-4 text-primary" /> Steps for iPhone/iPad
@@ -116,7 +227,7 @@ const Install = () => {
               </div>
             )}
 
-            {!deferredPrompt && platform === 'android' && (
+            {!deferredPrompt && platform === "android" && (
               <div className="text-left space-y-3">
                 <p className="text-sm font-semibold flex items-center gap-2">
                   <Smartphone className="w-4 h-4 text-primary" /> Steps for Android
@@ -129,7 +240,7 @@ const Install = () => {
               </div>
             )}
 
-            {!deferredPrompt && platform === 'desktop' && (
+            {!deferredPrompt && platform === "desktop" && !canChooseSaveLocation && (
               <div className="text-left space-y-3">
                 <p className="text-sm font-semibold flex items-center gap-2">
                   <MoreVertical className="w-4 h-4 text-primary" /> Steps for Desktop
@@ -140,6 +251,15 @@ const Install = () => {
                 </ol>
               </div>
             )}
+
+            <div className="rounded-lg border border-border/60 bg-secondary/30 p-3 text-left">
+              <p className="text-xs font-medium">Quick access after install</p>
+              <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                <li>• Home-screen icon appears automatically after install</li>
+                <li>• App opens in standalone mode and shows in recent apps</li>
+                <li>• Reopen quickly without returning to the browser tab</li>
+              </ul>
+            </div>
           </CardContent>
         </Card>
 
