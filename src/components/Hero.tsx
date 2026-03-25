@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Smartphone, Zap, DollarSign, Download, ArrowRight } from "lucide-react";
@@ -7,26 +6,6 @@ import Logo from "./Logo";
 
 const Hero = () => {
   const navigate = useNavigate();
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-
-  useEffect(() => {
-    const handleBeforeInstall = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    };
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-  }, []);
-
-  const handleInstallClick = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      await deferredPrompt.userChoice;
-      setDeferredPrompt(null);
-    } else {
-      navigate('/install');
-    }
-  };
 
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden px-4 py-20">
@@ -92,10 +71,10 @@ const Hero = () => {
         <Button 
           variant="ghost" 
           className="text-muted-foreground hover:text-foreground transition-all"
-          onClick={handleInstallClick}
+          onClick={() => navigate('/install')}
         >
           <Download className="w-4 h-4 mr-2" />
-          {deferredPrompt ? "Install App Now" : "Install App"}
+          Install App
         </Button>
 
         <p className="mt-14 text-sm text-muted-foreground/70">
