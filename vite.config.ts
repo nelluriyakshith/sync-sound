@@ -15,7 +15,10 @@ export default defineConfig(({ mode }) => ({
     mode === "development" && componentTagger(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'robots.txt', 'apple-touch-icon.png'],
+      devOptions: {
+        enabled: false,
+      },
+      includeAssets: ['robots.txt', 'apple-touch-icon.png'],
       manifest: {
         name: 'Sync Sound - Audio Sync',
         short_name: 'Sync Sound',
