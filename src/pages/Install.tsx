@@ -1,104 +1,49 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Download, CheckCircle2, Share, Smartphone, LaptopMinimalCheck, ExternalLink } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
+import { usePwaInstall } from "@/hooks/usePwaInstall";
 
 type InstallPlatform = "ios" | "android" | "desktop";
-
-type BeforeInstallPromptEvent = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
-};
-
-declare global {
-  interface Navigator {
-    standalone?: boolean;
-  }
-}
 
 const Install = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
-  const [platform, setPlatform] = useState<InstallPlatform>("desktop");
-  const [isInstalling, setIsInstalling] = useState(false);
+  const { install, isInstalled, canInstall } = usePwaInstall();
 
-  const isDesktop = platform === "desktop";
-  const isEmbeddedPreview = useMemo(() => {
-    try {
-      return window.self !== window.top;
-    } catch {
-      return true;
-    }
+  const platform: InstallPlatform = useMemo(() => {
+    const ua = navigator.userAgent.toLowerCase();
+    if (/iphone|ipad|ipod/.test(ua)) return "ios";
+    if (/android/.test(ua)) return "android";
+    return "desktop";
   }, []);
 
-  useEffect(() => {
-    const userAgent = window.navigator.userAgent.toLowerCase();
-    if (/iphone|ipad|ipod/.test(userAgent)) setPlatform("ios");
-    else if (/android/.test(userAgent)) setPlatform("android");
-    else setPlatform("desktop");
+  const isEmbedded = useMemo(() => {
+    try { return window.self !== window.top; } catch { return true; }
+  }, []);
 
-    if (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone) {
-      setIsInstalled(true);
-    }
-
-    const handleBeforeInstall = (event: Event) => {
-      event.preventDefault();
-      setDeferredPrompt(event as BeforeInstallPromptEvent);
-    };
-
-    const handleInstalled = () => {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
-      toast({ title: "Installed!", description: "Sync Sound is ready on your home screen and recent apps." });
-    };
-
-    window.addEventListener("beforeinstallprompt", handleBeforeInstall);
-    window.addEventListener("appinstalled", handleInstalled);
-
-    return () => {
-      window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
-      window.removeEventListener("appinstalled", handleInstalled);
-    };
-  }, [toast]);
-
-  const triggerInstall = useCallback(async () => {
-    if (!deferredPrompt) {
+  const handleInstall = async () => {
+    const result = await install();
+    if (result === "accepted") {
+      toast({ title: "Installed!", description: "Sync Sound is now on your home screen." });
+    } else if (result === "dismissed") {
+      toast({ title: "Cancelled", description: "You can install anytime.", variant: "destructive" });
+    } else {
+      // No prompt available — show platform instructions
       if (platform === "ios") {
-        toast({
-          title: "Install from Safari",
-          description: "Tap Share → Add to Home Screen. iPhone blocks one-tap install prompts.",
-        });
-        return;
-      }
-
-      toast({
-        title: "Install from browser menu",
-        description: isDesktop
-          ? "Click the install icon in the address bar, then confirm Install."
-          : "Open the browser menu and tap Install app.",
-      });
-      return;
-    }
-
-    setIsInstalling(true);
-    try {
-      await deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-
-      if (outcome === "accepted") {
-        setIsInstalled(true);
+        toast({ title: "Install from Safari", description: "Tap Share → Add to Home Screen." });
       } else {
-        toast({ title: "Install cancelled", description: "You can install again anytime.", variant: "destructive" });
+        toast({
+          title: "Install from browser",
+          description: platform === "desktop"
+            ? "Click the install icon (⊕) in the address bar."
+            : "Open browser menu (⋮) → Install app.",
+        });
       }
-    } finally {
-      setDeferredPrompt(null);
-      setIsInstalling(false);
     }
-  }, [deferredPrompt, isDesktop, platform, toast]);
+  };
 
   if (isInstalled) {
     return (
@@ -107,12 +52,8 @@ const Install = () => {
           <CardContent className="p-8 text-center">
             <CheckCircle2 className="w-16 h-16 text-primary mx-auto mb-4" />
             <h2 className="text-2xl font-bold font-display mb-2">App Installed!</h2>
-            <p className="text-muted-foreground mb-6">Sync Sound is now accessible from your home screen and recent apps.</p>
-            <Button
-              onClick={() => navigate("/")}
-              size="lg"
-              className="bg-gradient-to-r from-[hsl(var(--gradient-from))] to-[hsl(var(--gradient-to))] text-primary-foreground"
-            >
+            <p className="text-muted-foreground mb-6">Sync Sound is on your home screen and recent apps.</p>
+            <Button onClick={() => navigate("/")} size="lg" className="bg-gradient-to-r from-[hsl(var(--gradient-from))] to-[hsl(var(--gradient-to))] text-primary-foreground">
               Go to Home
             </Button>
           </CardContent>
@@ -133,71 +74,53 @@ const Install = () => {
             <div>
               <h1 className="text-2xl font-bold font-display mb-2">Install Sync Sound</h1>
               <p className="text-muted-foreground text-sm">
-                {deferredPrompt
-                  ? "One tap opens the native installer."
+                {canInstall
+                  ? "Tap below to install instantly — the app icon will appear on your home screen / desktop."
                   : platform === "ios"
-                    ? "Fast iPhone setup in 3 taps."
-                    : isDesktop
-                      ? "Use your browser installer for full desktop app mode."
-                      : "Install instantly from your browser menu."}
+                    ? "Follow 3 quick steps to add to your home screen."
+                    : "Use your browser to install the app."}
               </p>
             </div>
 
-            <Button
-              onClick={triggerInstall}
-              size="lg"
-              disabled={isInstalling}
-              className="w-full gap-2 bg-gradient-to-r from-[hsl(var(--gradient-from))] via-[hsl(var(--gradient-via))] to-[hsl(var(--gradient-to))] text-primary-foreground font-display font-semibold"
-            >
-              <LaptopMinimalCheck className="w-5 h-5" />
-              {isInstalling ? "Opening installer..." : deferredPrompt ? "Install App Now" : "Show Install Steps"}
+            <Button onClick={handleInstall} size="lg" className="w-full gap-2 bg-gradient-to-r from-[hsl(var(--gradient-from))] via-[hsl(var(--gradient-via))] to-[hsl(var(--gradient-to))] text-primary-foreground font-display font-semibold">
+              <Download className="w-5 h-5" />
+              {canInstall ? "Install Now" : "How to Install"}
             </Button>
 
-            {isEmbeddedPreview && (
-              <Button
-                onClick={() => window.open(window.location.href, "_blank", "noopener,noreferrer")}
-                size="lg"
-                variant="outline"
-                className="w-full gap-2"
-              >
-                <ExternalLink className="w-4 h-4" /> Open this page in a new tab
+            {isEmbedded && (
+              <Button onClick={() => window.open(window.location.href, "_blank", "noopener,noreferrer")} size="lg" variant="outline" className="w-full gap-2">
+                <ExternalLink className="w-4 h-4" /> Open in browser to install
               </Button>
             )}
 
-            {!deferredPrompt && platform === "ios" && (
+            {!canInstall && platform === "ios" && (
               <div className="text-left space-y-3">
-                <p className="text-sm font-semibold flex items-center gap-2">
-                  <Share className="w-4 h-4 text-primary" /> Steps for iPhone/iPad
-                </p>
+                <p className="text-sm font-semibold flex items-center gap-2"><Share className="w-4 h-4 text-primary" /> iPhone / iPad</p>
                 <ol className="space-y-2 text-sm text-muted-foreground">
-                  <li>1. Open this app in <strong className="text-foreground">Safari</strong>.</li>
-                  <li>2. Tap <strong className="text-foreground">Share</strong> → <strong className="text-foreground">Add to Home Screen</strong>.</li>
-                  <li>3. Tap <strong className="text-foreground">Add</strong> to finish install.</li>
+                  <li>1. Open in <strong className="text-foreground">Safari</strong></li>
+                  <li>2. Tap <strong className="text-foreground">Share</strong> → <strong className="text-foreground">Add to Home Screen</strong></li>
+                  <li>3. Tap <strong className="text-foreground">Add</strong></li>
                 </ol>
               </div>
             )}
 
-            {!deferredPrompt && platform === "android" && (
+            {!canInstall && platform === "android" && (
               <div className="text-left space-y-3">
-                <p className="text-sm font-semibold flex items-center gap-2">
-                  <Smartphone className="w-4 h-4 text-primary" /> Steps for Android
-                </p>
+                <p className="text-sm font-semibold flex items-center gap-2"><Smartphone className="w-4 h-4 text-primary" /> Android</p>
                 <ol className="space-y-2 text-sm text-muted-foreground">
-                  <li>1. Tap the <strong className="text-foreground">⋮ menu</strong> in your browser.</li>
-                  <li>2. Tap <strong className="text-foreground">Install app</strong>.</li>
-                  <li>3. Confirm <strong className="text-foreground">Install</strong>.</li>
+                  <li>1. Tap <strong className="text-foreground">⋮ menu</strong></li>
+                  <li>2. Tap <strong className="text-foreground">Install app</strong></li>
+                  <li>3. Confirm <strong className="text-foreground">Install</strong></li>
                 </ol>
               </div>
             )}
 
-            {!deferredPrompt && isDesktop && (
+            {!canInstall && platform === "desktop" && (
               <div className="text-left space-y-3">
-                <p className="text-sm font-semibold flex items-center gap-2">
-                  <LaptopMinimalCheck className="w-4 h-4 text-primary" /> Steps for Desktop
-                </p>
+                <p className="text-sm font-semibold flex items-center gap-2"><LaptopMinimalCheck className="w-4 h-4 text-primary" /> Desktop</p>
                 <ol className="space-y-2 text-sm text-muted-foreground">
-                  <li>1. Click the <strong className="text-foreground">Install icon</strong> in your address bar.</li>
-                  <li>2. Confirm <strong className="text-foreground">Install</strong> in the popup dialog.</li>
+                  <li>1. Click the <strong className="text-foreground">install icon (⊕)</strong> in the address bar</li>
+                  <li>2. Click <strong className="text-foreground">Install</strong></li>
                 </ol>
               </div>
             )}
@@ -205,18 +128,16 @@ const Install = () => {
             <div className="rounded-lg border border-border/60 bg-secondary/30 p-3 text-left">
               <p className="text-xs font-medium">After install</p>
               <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                <li>• App icon is available on home screen and desktop launcher</li>
-                <li>• Opens in standalone app mode, not as a browser tab</li>
-                <li>• Reopens quickly from recent apps</li>
+                <li>• App icon appears on home screen / desktop</li>
+                <li>• Opens in full-screen app mode (no browser bar)</li>
+                <li>• Available in recent apps for quick access</li>
               </ul>
             </div>
           </CardContent>
         </Card>
 
         <div className="text-center">
-          <Button variant="ghost" size="sm" onClick={() => navigate("/")} className="text-muted-foreground">
-            Back to Home
-          </Button>
+          <Button variant="ghost" size="sm" onClick={() => navigate("/")} className="text-muted-foreground">Back to Home</Button>
         </div>
       </div>
     </div>
