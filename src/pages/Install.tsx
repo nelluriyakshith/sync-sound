@@ -1,7 +1,7 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Download, CheckCircle2, Share, Smartphone, LaptopMinimalCheck, ExternalLink } from "lucide-react";
+import { Download, CheckCircle2, Share, Smartphone, LaptopMinimalCheck, ExternalLink, Play } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { usePwaInstall } from "@/hooks/usePwaInstall";
@@ -13,6 +13,7 @@ const Install = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { install, isInstalled, canInstall } = usePwaInstall();
+  const [showVideo, setShowVideo] = useState(false);
 
   const platform: InstallPlatform = useMemo(() => {
     const ua = navigator.userAgent.toLowerCase();
@@ -103,6 +104,25 @@ const Install = () => {
               <Download className="w-5 h-5" />
               {canInstall ? "Install Now" : "How to Install"}
             </Button>
+
+            <Button onClick={() => setShowVideo(!showVideo)} size="lg" variant="secondary" className="w-full gap-2">
+              <Play className="w-5 h-5" />
+              {showVideo ? "Hide" : "Watch"} Install Tutorial
+            </Button>
+
+            {showVideo && (
+              <div className="rounded-xl overflow-hidden border border-border/60">
+                <video
+                  src="/install-tutorial.mp4"
+                  controls
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full"
+                  style={{ maxHeight: 480 }}
+                />
+              </div>
+            )}
 
             {isInstallBlockedContext && (
               <Button onClick={() => window.open(window.location.href, "_blank", "noopener,noreferrer")} size="lg" variant="outline" className="w-full gap-2">
