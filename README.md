@@ -1,4 +1,4 @@
-# Welcome to your Lovable project
+# Welcome to your nelluri yakshith's project
 
 ## Project info
 
