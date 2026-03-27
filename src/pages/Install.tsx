@@ -7,6 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { usePwaInstall } from "@/hooks/usePwaInstall";
 
 type InstallPlatform = "ios" | "android" | "desktop";
+type BrowserKind = "chrome" | "edge" | "safari" | "firefox" | "other";
 
 const Install = () => {
   const navigate = useNavigate();
@@ -20,9 +21,25 @@ const Install = () => {
     return "desktop";
   }, []);
 
+  const browser: BrowserKind = useMemo(() => {
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.includes("edg/")) return "edge";
+    if (ua.includes("chrome/") && !ua.includes("edg/") && !ua.includes("opr/") && !ua.includes("samsungbrowser/")) return "chrome";
+    if (ua.includes("safari/") && !ua.includes("chrome/")) return "safari";
+    if (ua.includes("firefox/")) return "firefox";
+    return "other";
+  }, []);
+
   const isEmbedded = useMemo(() => {
     try { return window.self !== window.top; } catch { return true; }
   }, []);
+
+  const isPreviewHost = useMemo(
+    () => /id-preview--|lovableproject\.com/.test(window.location.hostname),
+    []
+  );
+
+  const isInstallBlockedContext = isEmbedded || isPreviewHost;
 
   const handleInstall = async () => {
     const result = await install();
@@ -38,7 +55,7 @@ const Install = () => {
         toast({
           title: "Install from browser",
           description: platform === "desktop"
-            ? "Click the install icon (⊕) in the address bar."
+            ? "Use browser menu: Chrome/Edge → ⋮ menu → Install app."
             : "Open browser menu (⋮) → Install app.",
         });
       }
@@ -78,7 +95,7 @@ const Install = () => {
                   ? "Tap below to install instantly — the app icon will appear on your home screen / desktop."
                   : platform === "ios"
                     ? "Follow 3 quick steps to add to your home screen."
-                    : "Use your browser to install the app."}
+                    : "Use your browser menu to install the app (address-bar icon may not appear)."}
               </p>
             </div>
 
@@ -87,10 +104,19 @@ const Install = () => {
               {canInstall ? "Install Now" : "How to Install"}
             </Button>
 
-            {isEmbedded && (
+            {isInstallBlockedContext && (
               <Button onClick={() => window.open(window.location.href, "_blank", "noopener,noreferrer")} size="lg" variant="outline" className="w-full gap-2">
-                <ExternalLink className="w-4 h-4" /> Open in browser to install
+                <ExternalLink className="w-4 h-4" /> Open full page for install
               </Button>
+            )}
+
+            {isPreviewHost && !canInstall && (
+              <div className="rounded-lg border border-border/60 bg-secondary/30 p-3 text-left">
+                <p className="text-xs font-medium">Install note</p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Install prompt may be blocked in preview. Open your published app URL in a normal browser tab, then use browser menu install.
+                </p>
+              </div>
             )}
 
             {!canInstall && platform === "ios" && (
@@ -119,8 +145,32 @@ const Install = () => {
               <div className="text-left space-y-3">
                 <p className="text-sm font-semibold flex items-center gap-2"><LaptopMinimalCheck className="w-4 h-4 text-primary" /> Desktop</p>
                 <ol className="space-y-2 text-sm text-muted-foreground">
-                  <li>1. Click the <strong className="text-foreground">install icon (⊕)</strong> in the address bar</li>
-                  <li>2. Click <strong className="text-foreground">Install</strong></li>
+                  {(browser === "chrome" || browser === "edge") && (
+                    <>
+                      <li>1. Click <strong className="text-foreground">⋮ menu</strong> in the browser</li>
+                      <li>2. Click <strong className="text-foreground">Install app</strong> (or Apps → Install this site)</li>
+                      <li>3. Confirm <strong className="text-foreground">Install</strong></li>
+                    </>
+                  )}
+                  {browser === "safari" && (
+                    <>
+                      <li>1. In Safari, open <strong className="text-foreground">File menu</strong></li>
+                      <li>2. Click <strong className="text-foreground">Add to Dock</strong></li>
+                    </>
+                  )}
+                  {browser === "firefox" && (
+                    <>
+                      <li>1. Firefox desktop does not support full app install prompt</li>
+                      <li>2. Open this app in <strong className="text-foreground">Chrome or Edge</strong></li>
+                      <li>3. Use <strong className="text-foreground">⋮ menu → Install app</strong></li>
+                    </>
+                  )}
+                  {browser === "other" && (
+                    <>
+                      <li>1. Open this app in <strong className="text-foreground">Chrome or Edge</strong></li>
+                      <li>2. Use <strong className="text-foreground">⋮ menu → Install app</strong></li>
+                    </>
+                  )}
                 </ol>
               </div>
             )}
