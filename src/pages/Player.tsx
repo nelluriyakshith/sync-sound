@@ -224,10 +224,15 @@ const Player = () => {
     );
     const nextCurrentTime = getSyncedPlaybackTime(playbackState);
 
+    const playbackDrift = Math.abs(currentSec - nextCurrentTime);
+
     setCurrentTrackIndex(nextTrackIndex);
     setIsPlaying(playbackState.is_playing);
     setCurrentSec(nextCurrentTime);
-    setYtSeekTo(nextCurrentTime);
+
+    if (options?.forceSeek || playbackDrift > 0.75 || nextTrackIndex !== currentTrackIndex) {
+      setYtSeekTo(nextCurrentTime);
+    }
 
     if (audioRef.current) {
       const duration = Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : 0;
@@ -238,7 +243,7 @@ const Player = () => {
         audioRef.current.currentTime = boundedTime;
       }
     }
-  }, [queue.length]);
+  }, [currentSec, currentTrackIndex, queue.length]);
 
   const syncAllRoomData = useCallback(async (
     targetRoomId: string,
