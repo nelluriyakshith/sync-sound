@@ -7,6 +7,7 @@ import { Plus, LogIn, Copy, Users, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
+import { getSavedDeviceName } from "@/lib/app-settings";
 import Logo from "@/components/Logo";
 
 const generateRoomCode = () => {
@@ -14,30 +15,6 @@ const generateRoomCode = () => {
   let code = "";
   for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
   return code;
-};
-
-const getDeviceName = () => {
-  const ua = navigator.userAgent;
-  // Try to get specific phone model
-  if (/iPhone/.test(ua)) return "iPhone";
-  if (/iPad/.test(ua)) return "iPad";
-  if (/Android/.test(ua)) {
-    // Try to extract model name like "SM-G991B", "Pixel 7", "Redmi Note 12", etc.
-    const buildMatch = ua.match(/;\s*([^;)]+)\s*Build/);
-    if (buildMatch) return buildMatch[1].trim();
-    const androidMatch = ua.match(/Android[^;]*;\s*([^;)]+)/);
-    if (androidMatch) return androidMatch[1].trim();
-    return "Android Device";
-  }
-  if (/Macintosh/.test(ua)) return "Mac";
-  if (/Windows/.test(ua)) return "Windows PC";
-  if (/CrOS/.test(ua)) return "Chromebook";
-  if (/Linux/.test(ua)) return "Linux PC";
-  // Add browser name as fallback
-  if (/Chrome/.test(ua)) return "Chrome Browser";
-  if (/Firefox/.test(ua)) return "Firefox Browser";
-  if (/Safari/.test(ua)) return "Safari Browser";
-  return "Device";
 };
 
 const Room = () => {
@@ -53,6 +30,7 @@ const Room = () => {
     setLoading(true);
     try {
       const code = generateRoomCode();
+      const deviceName = getSavedDeviceName();
 
       // Create room
       const { data: room, error: roomErr } = await supabase
@@ -69,7 +47,7 @@ const Room = () => {
         .insert({
           room_id: room.id,
           user_id: user.id,
-          device_name: getDeviceName(),
+          device_name: deviceName,
           role: "admin",
           is_online: true,
           last_seen: new Date().toISOString(),
@@ -103,6 +81,8 @@ const Room = () => {
     setLoading(true);
 
     try {
+      const deviceName = getSavedDeviceName();
+
       // Validate room exists
       const { data: room, error: findErr } = await supabase
         .from("rooms")
@@ -130,7 +110,7 @@ const Room = () => {
         // Update to online
         await supabase
           .from("room_members")
-          .update({ is_online: true, device_name: getDeviceName(), last_seen: new Date().toISOString() })
+          .update({ is_online: true, device_name: deviceName, last_seen: new Date().toISOString() })
           .eq("id", existing.id);
       } else {
         // Join as member
@@ -139,7 +119,7 @@ const Room = () => {
           .insert({
             room_id: room.id,
             user_id: user.id,
-            device_name: getDeviceName(),
+            device_name: deviceName,
             role: room.created_by === user.id ? "admin" : "member",
           });
 
