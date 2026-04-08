@@ -39,7 +39,7 @@ const YouTubePlayer = ({ onTrackAdd }: YouTubePlayerProps) => {
     setIsLoading(true);
 
     // We use noembed to get video title without an API key
-    fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`)
+    fetch(`https://noembed.com/embed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}`)
       .then(r => r.json())
       .then(data => {
         const title = data.title || "YouTube Video";
