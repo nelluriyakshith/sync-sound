@@ -161,10 +161,53 @@ const Player = () => {
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const legacyQueueWarningShown = useRef(false);
   const syncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remotePlaybackRef = useRef<PlaybackStateRow | null>(null);
 
   const currentTrack = queue[currentTrackIndex] ?? null;
   const isYouTube = !!currentTrack?.youtubeId;
   const onlineMembers = members.filter(m => m.is_online);
+
+  const applyPlaybackAlignment = useCallback((targetTime: number, options?: { force?: boolean; isRemotePlaying?: boolean }) => {
+    const normalizedTargetTime = Math.max(0, targetTime);
+    const actualTime = isYouTube ? currentSec : audioRef.current?.currentTime ?? currentSec;
+    const drift = normalizedTargetTime - actualTime;
+    const absoluteDrift = Math.abs(drift);
+
+    setCurrentSec(normalizedTargetTime);
+
+    if (totalDuration > 0) {
+      setProgress((normalizedTargetTime / totalDuration) * 100 || 0);
+    }
+
+    if (isYouTube) {
+      if (options?.force || absoluteDrift > 0.35) {
+        setYtSeekTo(normalizedTargetTime);
+      }
+      return;
+    }
+
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const boundedTime = Number.isFinite(audio.duration) && audio.duration > 0
+      ? Math.min(normalizedTargetTime, Math.max(audio.duration - 0.25, 0))
+      : normalizedTargetTime;
+
+    if (options?.force || absoluteDrift > 0.35) {
+      audio.currentTime = boundedTime;
+      if (audio.playbackRate !== 1) audio.playbackRate = 1;
+      return;
+    }
+
+    if (options?.isRemotePlaying && absoluteDrift > 0.12) {
+      audio.playbackRate = drift > 0 ? 1.04 : 0.96;
+      return;
+    }
+
+    if (audio.playbackRate !== 1) {
+      audio.playbackRate = 1;
+    }
+  }, [currentSec, isYouTube, totalDuration]);
 
   const loadMembers = useCallback(async (targetRoomId: string) => {
     const { data: mems, error } = await supabase
@@ -212,12 +255,15 @@ const Player = () => {
       .from("room_playback_state")
       .select("*")
       .eq("room_id", targetRoomId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     if (error) throw error;
     if (!ps) return;
 
     const playbackState = ps as PlaybackStateRow;
+    remotePlaybackRef.current = playbackState;
     const nextTrackIndex = clampTrackIndex(
       playbackState.current_track_index,
       options?.trackCount ?? Math.max(queue.length, playbackState.current_track_index + 1)
@@ -228,22 +274,12 @@ const Player = () => {
 
     setCurrentTrackIndex(nextTrackIndex);
     setIsPlaying(playbackState.is_playing);
-    setCurrentSec(nextCurrentTime);
 
-    if (options?.forceSeek || playbackDrift > 0.75 || nextTrackIndex !== currentTrackIndex) {
-      setYtSeekTo(nextCurrentTime);
-    }
-
-    if (audioRef.current) {
-      const duration = Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : 0;
-      const boundedTime = duration > 0 ? Math.min(nextCurrentTime, Math.max(duration - 0.25, 0)) : nextCurrentTime;
-      const drift = Math.abs(audioRef.current.currentTime - boundedTime);
-
-      if (options?.forceSeek || drift > 0.75) {
-        audioRef.current.currentTime = boundedTime;
-      }
-    }
-  }, [currentSec, currentTrackIndex, queue.length]);
+    applyPlaybackAlignment(nextCurrentTime, {
+      force: options?.forceSeek || playbackDrift > 0.35 || nextTrackIndex !== currentTrackIndex,
+      isRemotePlaying: playbackState.is_playing,
+    });
+  }, [applyPlaybackAlignment, currentSec, currentTrackIndex, queue.length]);
 
   const syncAllRoomData = useCallback(async (
     targetRoomId: string,
@@ -420,18 +456,55 @@ const Player = () => {
   /* ── Sync playback state to DB ── */
   const syncPlaybackState = useCallback(async (overrides?: { is_playing?: boolean; current_track_index?: number; current_time_seconds?: number }) => {
     if (!roomId || !user) return;
+
+    const playbackTime = Math.max(
+      0,
+      overrides?.current_time_seconds ?? (isYouTube ? currentSec : audioRef.current?.currentTime ?? currentSec)
+    );
+
     const data = {
       room_id: roomId,
       is_playing: overrides?.is_playing ?? isPlaying,
       current_track_index: overrides?.current_track_index ?? currentTrackIndex,
-      current_time_seconds: overrides?.current_time_seconds ?? currentSec,
+      current_time_seconds: playbackTime,
       updated_at: new Date().toISOString(),
       updated_by: user.id,
     };
-    await supabase
+
+    remotePlaybackRef.current = data;
+
+    const { data: updatedRows, error: updateError } = await supabase
       .from("room_playback_state")
-      .upsert(data, { onConflict: "room_id" });
-  }, [roomId, user, isPlaying, currentTrackIndex, currentSec]);
+      .update(data)
+      .eq("room_id", roomId)
+      .select("room_id");
+
+    if (updateError) {
+      toast({ title: "Sync failed", description: updateError.message, variant: "destructive" });
+      return false;
+    }
+
+    if (!updatedRows || updatedRows.length === 0) {
+      const { error: insertError } = await supabase
+        .from("room_playback_state")
+        .insert(data);
+
+      if (insertError) {
+        const { error: retryError } = await supabase
+          .from("room_playback_state")
+          .update(data)
+          .eq("room_id", roomId);
+
+        if (retryError) {
+          toast({ title: "Sync failed", description: retryError.message, variant: "destructive" });
+          return false;
+        }
+      }
+    }
+
+    setLastSyncAt(new Date().toLocaleTimeString());
+    return true;
+  }, [roomId, user, isPlaying, currentTrackIndex, currentSec, isYouTube, toast]);
 
   const tryStartLocalPlayback = useCallback(async () => {
     if (!audioRef.current) return false;
@@ -539,13 +612,8 @@ const Player = () => {
   useEffect(() => {
     if (!audioRef.current || isYouTube || !currentTrack) return;
 
-    const duration = Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : 0;
-    const boundedTime = duration > 0 ? Math.min(currentSec, Math.max(duration - 0.25, 0)) : currentSec;
-
-    if (Math.abs(audioRef.current.currentTime - boundedTime) > 0.75) {
-      audioRef.current.currentTime = boundedTime;
-    }
-  }, [currentSec, currentTrack, isYouTube]);
+    applyPlaybackAlignment(currentSec, { isRemotePlaying: isPlaying });
+  }, [applyPlaybackAlignment, currentSec, currentTrack, isPlaying, isYouTube]);
 
   /* ── volume (local) ── */
   useEffect(() => {
@@ -562,6 +630,33 @@ const Player = () => {
 
     audioRef.current.pause();
   }, [isPlaying, isYouTube, tryStartLocalPlayback]);
+
+  useEffect(() => {
+    if (!roomId || !currentTrack || currentTrack.isLocal) return;
+
+    const interval = setInterval(() => {
+      const remotePlayback = remotePlaybackRef.current;
+      if (!remotePlayback) return;
+
+      const targetTime = getSyncedPlaybackTime(remotePlayback);
+      const actualTime = isYouTube ? currentSec : audioRef.current?.currentTime ?? currentSec;
+      const drift = Math.abs(targetTime - actualTime);
+
+      if (drift < 0.12) {
+        if (audioRef.current && audioRef.current.playbackRate !== 1) {
+          audioRef.current.playbackRate = 1;
+        }
+        return;
+      }
+
+      applyPlaybackAlignment(targetTime, {
+        force: drift > 0.35,
+        isRemotePlaying: remotePlayback.is_playing,
+      });
+    }, 800);
+
+    return () => clearInterval(interval);
+  }, [applyPlaybackAlignment, currentSec, currentTrack, isYouTube, roomId]);
 
   const handleUnlockAudio = async () => {
     const started = await tryStartLocalPlayback();
@@ -583,14 +678,14 @@ const Player = () => {
     toast({ title: "Audio unlocked", description: "This device is now synced for playback" });
   };
 
-  const handlePlayPause = () => {
+  const handlePlayPause = async () => {
     const next = !isPlaying;
     const playbackTime = isYouTube ? currentSec : audioRef.current?.currentTime ?? currentSec;
 
     setCurrentSec(playbackTime);
     setIsPlaying(next);
     if (!currentTrack?.isLocal) {
-      syncPlaybackState({ is_playing: next, current_time_seconds: playbackTime });
+      await syncPlaybackState({ is_playing: next, current_time_seconds: playbackTime });
     }
   };
 
@@ -616,13 +711,24 @@ const Player = () => {
     if (isYouTube && totalDuration) {
       const t = (v[0] / 100) * totalDuration;
       setYtSeekTo(t); setProgress(v[0]); setCurrentSec(t);
-      syncPlaybackState({ current_time_seconds: t });
     } else if (audioRef.current && currentTrack) {
       const t = (v[0] / 100) * audioRef.current.duration;
       audioRef.current.currentTime = t; setProgress(v[0]); setCurrentSec(t);
-      if (!currentTrack.isLocal) {
-        syncPlaybackState({ current_time_seconds: t });
-      }
+    }
+  };
+
+  const handleSeekCommit = async (v: number[]) => {
+    if (!currentTrack || currentTrack.isLocal) return;
+
+    if (isYouTube && totalDuration) {
+      const t = (v[0] / 100) * totalDuration;
+      await syncPlaybackState({ current_time_seconds: t });
+      return;
+    }
+
+    if (audioRef.current) {
+      const t = (v[0] / 100) * audioRef.current.duration;
+      await syncPlaybackState({ current_time_seconds: t });
     }
   };
 
@@ -865,7 +971,7 @@ const Player = () => {
           {/* Controls */}
           <div className="p-5 space-y-4">
             <div className="space-y-1.5">
-              <Slider value={[progress]} onValueChange={handleSeek} max={100} step={0.1} className="cursor-pointer" disabled={!currentTrack} />
+              <Slider value={[progress]} onValueChange={handleSeek} onValueCommit={handleSeekCommit} max={100} step={0.1} className="cursor-pointer" disabled={!currentTrack} />
               <div className="flex justify-between text-xs text-muted-foreground font-mono">
                 <span>{formatTime(currentSec)}</span>
                 <span>{formatTime(totalDuration)}</span>
@@ -1091,7 +1197,7 @@ const Player = () => {
               <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary border border-card animate-pulse" />
             </div>
             <div>
-              <p className="text-xs font-medium">Synced · Real-time</p>
+              <p className="text-xs font-medium">AI Auto-Sync · Real-time</p>
               <p className="text-[10px] text-muted-foreground">
                 Room: {roomCode}{lastSyncAt ? ` · Updated ${lastSyncAt}` : ""}
               </p>
