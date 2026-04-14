@@ -162,25 +162,51 @@ const Player = () => {
   const legacyQueueWarningShown = useRef(false);
   const syncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const remotePlaybackRef = useRef<PlaybackStateRow | null>(null);
+  const currentSecRef = useRef(0);
+  const totalDurationRef = useRef(0);
+  const currentTrackIndexRef = useRef(0);
+  const isPlayingRef = useRef(false);
+  const queueLengthRef = useRef(0);
 
   const currentTrack = queue[currentTrackIndex] ?? null;
   const isYouTube = !!currentTrack?.youtubeId;
   const onlineMembers = members.filter(m => m.is_online);
 
+  useEffect(() => {
+    currentSecRef.current = currentSec;
+  }, [currentSec]);
+
+  useEffect(() => {
+    totalDurationRef.current = totalDuration;
+  }, [totalDuration]);
+
+  useEffect(() => {
+    currentTrackIndexRef.current = currentTrackIndex;
+  }, [currentTrackIndex]);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    queueLengthRef.current = queue.length;
+  }, [queue.length]);
+
   const applyPlaybackAlignment = useCallback((targetTime: number, options?: { force?: boolean; isRemotePlaying?: boolean }) => {
     const normalizedTargetTime = Math.max(0, targetTime);
-    const actualTime = isYouTube ? currentSec : audioRef.current?.currentTime ?? currentSec;
+    const actualTime = isYouTube ? currentSecRef.current : audioRef.current?.currentTime ?? currentSecRef.current;
     const drift = normalizedTargetTime - actualTime;
     const absoluteDrift = Math.abs(drift);
 
+    currentSecRef.current = normalizedTargetTime;
     setCurrentSec(normalizedTargetTime);
 
-    if (totalDuration > 0) {
-      setProgress((normalizedTargetTime / totalDuration) * 100 || 0);
+    if (totalDurationRef.current > 0) {
+      setProgress((normalizedTargetTime / totalDurationRef.current) * 100 || 0);
     }
 
     if (isYouTube) {
-      if (options?.force || absoluteDrift > 0.35) {
+      if (options?.force || absoluteDrift > 0.4) {
         setYtSeekTo(normalizedTargetTime);
       }
       return;
@@ -193,21 +219,34 @@ const Player = () => {
       ? Math.min(normalizedTargetTime, Math.max(audio.duration - 0.25, 0))
       : normalizedTargetTime;
 
-    if (options?.force || absoluteDrift > 0.35) {
-      audio.currentTime = boundedTime;
+    if (absoluteDrift < 0.08) {
       if (audio.playbackRate !== 1) audio.playbackRate = 1;
       return;
     }
 
-    if (options?.isRemotePlaying && absoluteDrift > 0.12) {
-      audio.playbackRate = drift > 0 ? 1.04 : 0.96;
+    if (options?.force || absoluteDrift > 0.4) {
+      if (Math.abs(audio.currentTime - boundedTime) > 0.05) {
+        audio.currentTime = boundedTime;
+      }
+      if (audio.playbackRate !== 1) audio.playbackRate = 1;
+      return;
+    }
+
+    if (options?.isRemotePlaying) {
+      const nextRate = absoluteDrift > 0.24
+        ? (drift > 0 ? 1.03 : 0.97)
+        : (drift > 0 ? 1.015 : 0.985);
+
+      if (audio.playbackRate !== nextRate) {
+        audio.playbackRate = nextRate;
+      }
       return;
     }
 
     if (audio.playbackRate !== 1) {
       audio.playbackRate = 1;
     }
-  }, [currentSec, isYouTube, totalDuration]);
+  }, [isYouTube]);
 
   const loadMembers = useCallback(async (targetRoomId: string) => {
     const { data: mems, error } = await supabase
@@ -266,20 +305,20 @@ const Player = () => {
     remotePlaybackRef.current = playbackState;
     const nextTrackIndex = clampTrackIndex(
       playbackState.current_track_index,
-      options?.trackCount ?? Math.max(queue.length, playbackState.current_track_index + 1)
+      options?.trackCount ?? Math.max(queueLengthRef.current, playbackState.current_track_index + 1)
     );
     const nextCurrentTime = getSyncedPlaybackTime(playbackState);
 
-    const playbackDrift = Math.abs(currentSec - nextCurrentTime);
+    const playbackDrift = Math.abs(currentSecRef.current - nextCurrentTime);
 
     setCurrentTrackIndex(nextTrackIndex);
     setIsPlaying(playbackState.is_playing);
 
     applyPlaybackAlignment(nextCurrentTime, {
-      force: options?.forceSeek || playbackDrift > 0.35 || nextTrackIndex !== currentTrackIndex,
+      force: options?.forceSeek || playbackDrift > 0.4 || nextTrackIndex !== currentTrackIndexRef.current,
       isRemotePlaying: playbackState.is_playing,
     });
-  }, [applyPlaybackAlignment, currentSec, currentTrackIndex, queue.length]);
+  }, [applyPlaybackAlignment]);
 
   const syncAllRoomData = useCallback(async (
     targetRoomId: string,
@@ -312,7 +351,7 @@ const Player = () => {
 
     setLastSyncAt(new Date().toLocaleTimeString());
     return true;
-  }, [loadMembers, loadQueue, loadPlaybackState, queue.length, toast]);
+  }, [loadMembers, loadQueue, loadPlaybackState, toast]);
 
   const handleManualSync = useCallback(async () => {
     if (!roomId) return;
@@ -459,13 +498,13 @@ const Player = () => {
 
     const playbackTime = Math.max(
       0,
-      overrides?.current_time_seconds ?? (isYouTube ? currentSec : audioRef.current?.currentTime ?? currentSec)
+      overrides?.current_time_seconds ?? (isYouTube ? currentSecRef.current : audioRef.current?.currentTime ?? currentSecRef.current)
     );
 
     const data = {
       room_id: roomId,
-      is_playing: overrides?.is_playing ?? isPlaying,
-      current_track_index: overrides?.current_track_index ?? currentTrackIndex,
+      is_playing: overrides?.is_playing ?? isPlayingRef.current,
+      current_track_index: overrides?.current_track_index ?? currentTrackIndexRef.current,
       current_time_seconds: playbackTime,
       updated_at: new Date().toISOString(),
       updated_by: user.id,
@@ -504,7 +543,7 @@ const Player = () => {
 
     setLastSyncAt(new Date().toLocaleTimeString());
     return true;
-  }, [roomId, user, isPlaying, currentTrackIndex, currentSec, isYouTube, toast]);
+  }, [roomId, user, isYouTube, toast]);
 
   const tryStartLocalPlayback = useCallback(async () => {
     if (!audioRef.current) return false;
@@ -593,6 +632,7 @@ const Player = () => {
     audio.addEventListener("loadedmetadata", onLoadedMetadata);
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("error", onError);
+    audio.load();
 
     if (isPlaying) {
       tryStartLocalPlayback();
@@ -608,12 +648,6 @@ const Player = () => {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrack?.id]);
-
-  useEffect(() => {
-    if (!audioRef.current || isYouTube || !currentTrack) return;
-
-    applyPlaybackAlignment(currentSec, { isRemotePlaying: isPlaying });
-  }, [applyPlaybackAlignment, currentSec, currentTrack, isPlaying, isYouTube]);
 
   /* ── volume (local) ── */
   useEffect(() => {
@@ -639,10 +673,10 @@ const Player = () => {
       if (!remotePlayback) return;
 
       const targetTime = getSyncedPlaybackTime(remotePlayback);
-      const actualTime = isYouTube ? currentSec : audioRef.current?.currentTime ?? currentSec;
+      const actualTime = isYouTube ? currentSecRef.current : audioRef.current?.currentTime ?? currentSecRef.current;
       const drift = Math.abs(targetTime - actualTime);
 
-      if (drift < 0.12) {
+      if (drift < 0.08) {
         if (audioRef.current && audioRef.current.playbackRate !== 1) {
           audioRef.current.playbackRate = 1;
         }
@@ -650,13 +684,13 @@ const Player = () => {
       }
 
       applyPlaybackAlignment(targetTime, {
-        force: drift > 0.35,
+        force: drift > 0.4,
         isRemotePlaying: remotePlayback.is_playing,
       });
     }, 800);
 
     return () => clearInterval(interval);
-  }, [applyPlaybackAlignment, currentSec, currentTrack, isYouTube, roomId]);
+  }, [applyPlaybackAlignment, currentTrack?.id, currentTrack?.isLocal, isYouTube, roomId]);
 
   const handleUnlockAudio = async () => {
     const started = await tryStartLocalPlayback();
