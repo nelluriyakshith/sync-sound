@@ -234,6 +234,7 @@ const Player = () => {
   const applyPlaybackAlignment = useCallback((targetTime: number, options?: { force?: boolean; isRemotePlaying?: boolean }) => {
     const normalizedTargetTime = Math.max(0, targetTime);
     const actualTime = isYouTube ? currentSecRef.current : audioRef.current?.currentTime ?? currentSecRef.current;
+    const drift = normalizedTargetTime - actualTime;
     const absoluteDrift = Math.abs(drift);
     const mediaDuration = isYouTube ? totalDurationRef.current : audioRef.current?.duration ?? totalDurationRef.current;
 
