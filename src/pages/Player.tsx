@@ -160,13 +160,16 @@ const Player = () => {
   const [needsPlaybackUnlock, setNeedsPlaybackUnlock] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const legacyQueueWarningShown = useRef(false);
-  const syncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const roomRefreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playbackRefreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const remotePlaybackRef = useRef<PlaybackStateRow | null>(null);
   const currentSecRef = useRef(0);
   const totalDurationRef = useRef(0);
   const currentTrackIndexRef = useRef(0);
   const isPlayingRef = useRef(false);
   const queueLengthRef = useRef(0);
+  const lastPlaybackUiUpdateRef = useRef(0);
+  const paintedCurrentSecRef = useRef(0);
 
   const currentTrack = queue[currentTrackIndex] ?? null;
   const isYouTube = !!currentTrack?.youtubeId;
@@ -192,21 +195,58 @@ const Player = () => {
     queueLengthRef.current = queue.length;
   }, [queue.length]);
 
+  const setPlaybackUi = useCallback((nextTime: number, duration?: number, force = false) => {
+    const safeTime = Number.isFinite(nextTime) ? Math.max(0, nextTime) : 0;
+    const safeDuration = Number.isFinite(duration ?? Number.NaN)
+      ? Math.max(0, duration as number)
+      : undefined;
+
+    currentSecRef.current = safeTime;
+    if (typeof safeDuration === "number") {
+      totalDurationRef.current = safeDuration;
+    }
+
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (!force && now - lastPlaybackUiUpdateRef.current < 140 && Math.abs(safeTime - paintedCurrentSecRef.current) < 0.18) {
+      return;
+    }
+
+    lastPlaybackUiUpdateRef.current = now;
+    paintedCurrentSecRef.current = safeTime;
+    setCurrentSec(safeTime);
+
+    if (typeof safeDuration === "number") {
+      setTotalDuration(safeDuration);
+      setProgress(safeDuration > 0 ? (safeTime / safeDuration) * 100 || 0 : 0);
+      return;
+    }
+
+    const fallbackDuration = totalDurationRef.current;
+    setProgress(fallbackDuration > 0 ? (safeTime / fallbackDuration) * 100 || 0 : 0);
+  }, []);
+
+  const resetPlaybackUi = useCallback(() => {
+    lastPlaybackUiUpdateRef.current = 0;
+    paintedCurrentSecRef.current = 0;
+    setPlaybackUi(0, 0, true);
+  }, [setPlaybackUi]);
+
   const applyPlaybackAlignment = useCallback((targetTime: number, options?: { force?: boolean; isRemotePlaying?: boolean }) => {
     const normalizedTargetTime = Math.max(0, targetTime);
     const actualTime = isYouTube ? currentSecRef.current : audioRef.current?.currentTime ?? currentSecRef.current;
     const drift = normalizedTargetTime - actualTime;
     const absoluteDrift = Math.abs(drift);
+    const mediaDuration = isYouTube ? totalDurationRef.current : audioRef.current?.duration ?? totalDurationRef.current;
 
-    currentSecRef.current = normalizedTargetTime;
-    setCurrentSec(normalizedTargetTime);
-
-    if (totalDurationRef.current > 0) {
-      setProgress((normalizedTargetTime / totalDurationRef.current) * 100 || 0);
-    }
+    setPlaybackUi(
+      normalizedTargetTime,
+      Number.isFinite(mediaDuration) ? mediaDuration : undefined,
+      options?.force
+    );
 
     if (isYouTube) {
-      if (options?.force || absoluteDrift > 0.4) {
+      const ytSeekThreshold = options?.isRemotePlaying ? 0.45 : 0.1;
+      if (options?.force || absoluteDrift > ytSeekThreshold) {
         setYtSeekTo(normalizedTargetTime);
       }
       return;
@@ -219,34 +259,20 @@ const Player = () => {
       ? Math.min(normalizedTargetTime, Math.max(audio.duration - 0.25, 0))
       : normalizedTargetTime;
 
-    if (absoluteDrift < 0.08) {
+    const seekThreshold = options?.isRemotePlaying ? 0.22 : 0.08;
+    if (!options?.force && absoluteDrift < seekThreshold) {
       if (audio.playbackRate !== 1) audio.playbackRate = 1;
       return;
     }
 
-    if (options?.force || absoluteDrift > 0.4) {
-      if (Math.abs(audio.currentTime - boundedTime) > 0.05) {
-        audio.currentTime = boundedTime;
-      }
-      if (audio.playbackRate !== 1) audio.playbackRate = 1;
-      return;
-    }
-
-    if (options?.isRemotePlaying) {
-      const nextRate = absoluteDrift > 0.24
-        ? (drift > 0 ? 1.03 : 0.97)
-        : (drift > 0 ? 1.015 : 0.985);
-
-      if (audio.playbackRate !== nextRate) {
-        audio.playbackRate = nextRate;
-      }
-      return;
+    if (Math.abs(audio.currentTime - boundedTime) > 0.05) {
+      audio.currentTime = boundedTime;
     }
 
     if (audio.playbackRate !== 1) {
       audio.playbackRate = 1;
     }
-  }, [isYouTube]);
+  }, [isYouTube, setPlaybackUi]);
 
   const loadMembers = useCallback(async (targetRoomId: string) => {
     const { data: mems, error } = await supabase
@@ -302,6 +328,7 @@ const Player = () => {
     if (!ps) return;
 
     const playbackState = ps as PlaybackStateRow;
+    const previousPlayback = remotePlaybackRef.current;
     remotePlaybackRef.current = playbackState;
     const nextTrackIndex = clampTrackIndex(
       playbackState.current_track_index,
@@ -310,12 +337,20 @@ const Player = () => {
     const nextCurrentTime = getSyncedPlaybackTime(playbackState);
 
     const playbackDrift = Math.abs(currentSecRef.current - nextCurrentTime);
+    const shouldForceAlignment = Boolean(
+      options?.forceSeek ||
+      !previousPlayback ||
+      nextTrackIndex !== currentTrackIndexRef.current ||
+      playbackState.is_playing !== isPlayingRef.current ||
+      !playbackState.is_playing ||
+      playbackDrift > 0.22
+    );
 
     setCurrentTrackIndex(nextTrackIndex);
     setIsPlaying(playbackState.is_playing);
 
     applyPlaybackAlignment(nextCurrentTime, {
-      force: options?.forceSeek || playbackDrift > 0.4 || nextTrackIndex !== currentTrackIndexRef.current,
+      force: shouldForceAlignment,
       isRemotePlaying: playbackState.is_playing,
     });
   }, [applyPlaybackAlignment]);
@@ -436,11 +471,18 @@ const Player = () => {
   useEffect(() => {
     if (!roomId) return;
 
-    const scheduleSync = () => {
-      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current);
-      syncDebounceRef.current = setTimeout(() => {
-        syncAllRoomData(roomId, true);
+    const scheduleRoomRefresh = (forcePlaybackAlignment = false) => {
+      if (roomRefreshDebounceRef.current) clearTimeout(roomRefreshDebounceRef.current);
+      roomRefreshDebounceRef.current = setTimeout(() => {
+        void syncAllRoomData(roomId, true, forcePlaybackAlignment);
       }, 250);
+    };
+
+    const schedulePlaybackRefresh = () => {
+      if (playbackRefreshDebounceRef.current) clearTimeout(playbackRefreshDebounceRef.current);
+      playbackRefreshDebounceRef.current = setTimeout(() => {
+        void loadPlaybackState(roomId, { trackCount: queueLengthRef.current });
+      }, 120);
     };
 
     const channel = supabase
@@ -448,27 +490,27 @@ const Player = () => {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` },
-        scheduleSync
+        () => scheduleRoomRefresh()
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_queue", filter: `room_id=eq.${roomId}` },
-        scheduleSync
+        () => scheduleRoomRefresh(true)
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_playback_state", filter: `room_id=eq.${roomId}` },
-        scheduleSync
+        schedulePlaybackRefresh
       )
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
-          scheduleSync();
+          scheduleRoomRefresh(true);
         }
       });
 
     const handleVisibility = () => {
       if (document.visibilityState === "visible") {
-        syncAllRoomData(roomId, true);
+        scheduleRoomRefresh(true);
       }
     };
 
@@ -476,21 +518,11 @@ const Player = () => {
 
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);
-      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current);
+      if (roomRefreshDebounceRef.current) clearTimeout(roomRefreshDebounceRef.current);
+      if (playbackRefreshDebounceRef.current) clearTimeout(playbackRefreshDebounceRef.current);
       supabase.removeChannel(channel);
     };
-  }, [roomId, syncAllRoomData]);
-
-  /* ── Fallback refresh (protects against dropped realtime events) ── */
-  useEffect(() => {
-    if (!roomId) return;
-
-    const interval = setInterval(() => {
-      syncAllRoomData(roomId, true);
-    }, 3500);
-
-    return () => clearInterval(interval);
-  }, [roomId, syncAllRoomData]);
+  }, [loadPlaybackState, roomId, syncAllRoomData]);
 
   /* ── Sync playback state to DB ── */
   const syncPlaybackState = useCallback(async (overrides?: { is_playing?: boolean; current_track_index?: number; current_time_seconds?: number }) => {
@@ -546,9 +578,15 @@ const Player = () => {
   }, [roomId, user, isYouTube, toast]);
 
   const tryStartLocalPlayback = useCallback(async () => {
-    if (!audioRef.current) return false;
+    const audio = audioRef.current;
+    if (!audio) return false;
+
     try {
-      await audioRef.current.play();
+      if (audio.playbackRate !== 1) {
+        audio.playbackRate = 1;
+      }
+
+      await audio.play();
       setNeedsPlaybackUnlock(false);
       return true;
     } catch (err: any) {
@@ -596,26 +634,38 @@ const Player = () => {
   /* ── audio element sync (local tracks only) ── */
   useEffect(() => {
     if (!currentTrack || isYouTube) return;
-    const audio = new Audio(currentTrack.url);
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.playbackRate = 1;
+      audioRef.current.removeAttribute("src");
+      audioRef.current.load();
+      audioRef.current = null;
+    }
+
+    const audio = new Audio();
+    audio.src = currentTrack.url;
     audio.preload = "auto";
     audio.crossOrigin = "anonymous";
     audio.volume = isMuted ? 0 : volume[0] / 100;
     audioRef.current = audio;
 
     const onTimeUpdate = () => {
-      setCurrentSec(audio.currentTime);
-      setTotalDuration(audio.duration || 0);
-      setProgress((audio.currentTime / audio.duration) * 100 || 0);
+      setPlaybackUi(audio.currentTime, audio.duration || 0);
     };
     const onLoadedMetadata = () => {
       const duration = audio.duration || 0;
-      const startTime = duration > 0 ? Math.min(currentSec, Math.max(duration - 0.25, 0)) : currentSec;
+      const startTime = duration > 0 ? Math.min(currentSecRef.current, Math.max(duration - 0.25, 0)) : currentSecRef.current;
 
-      setTotalDuration(duration);
-
-      if (startTime > 0) {
+      if (startTime > 0 && Math.abs(audio.currentTime - startTime) > 0.05) {
         audio.currentTime = startTime;
-        setProgress(duration ? (startTime / duration) * 100 : 0);
+      }
+
+      setPlaybackUi(startTime, duration, true);
+    };
+    const onCanPlay = () => {
+      if (isPlayingRef.current) {
+        void tryStartLocalPlayback();
       }
     };
     const onEnded = () => handleNext();
@@ -630,21 +680,24 @@ const Player = () => {
 
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("loadedmetadata", onLoadedMetadata);
+    audio.addEventListener("canplay", onCanPlay);
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("error", onError);
     audio.load();
 
-    if (isPlaying) {
-      tryStartLocalPlayback();
-    }
-
     return () => {
       audio.pause();
+      audio.playbackRate = 1;
       audio.removeEventListener("timeupdate", onTimeUpdate);
       audio.removeEventListener("loadedmetadata", onLoadedMetadata);
+      audio.removeEventListener("canplay", onCanPlay);
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("error", onError);
-      audioRef.current = null;
+      audio.removeAttribute("src");
+      audio.load();
+      if (audioRef.current === audio) {
+        audioRef.current = null;
+      }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrack?.id]);
@@ -665,33 +718,6 @@ const Player = () => {
     audioRef.current.pause();
   }, [isPlaying, isYouTube, tryStartLocalPlayback]);
 
-  useEffect(() => {
-    if (!roomId || !currentTrack || currentTrack.isLocal) return;
-
-    const interval = setInterval(() => {
-      const remotePlayback = remotePlaybackRef.current;
-      if (!remotePlayback) return;
-
-      const targetTime = getSyncedPlaybackTime(remotePlayback);
-      const actualTime = isYouTube ? currentSecRef.current : audioRef.current?.currentTime ?? currentSecRef.current;
-      const drift = Math.abs(targetTime - actualTime);
-
-      if (drift < 0.08) {
-        if (audioRef.current && audioRef.current.playbackRate !== 1) {
-          audioRef.current.playbackRate = 1;
-        }
-        return;
-      }
-
-      applyPlaybackAlignment(targetTime, {
-        force: drift > 0.4,
-        isRemotePlaying: remotePlayback.is_playing,
-      });
-    }, 800);
-
-    return () => clearInterval(interval);
-  }, [applyPlaybackAlignment, currentTrack?.id, currentTrack?.isLocal, isYouTube, roomId]);
-
   const handleUnlockAudio = async () => {
     const started = await tryStartLocalPlayback();
     if (!started) {
@@ -706,7 +732,7 @@ const Player = () => {
     if (currentTrack && !currentTrack.isLocal) {
       await syncPlaybackState({
         is_playing: true,
-        current_time_seconds: audioRef.current?.currentTime ?? currentSec,
+        current_time_seconds: audioRef.current?.currentTime ?? currentSecRef.current,
       });
     }
     toast({ title: "Audio unlocked", description: "This device is now synced for playback" });
@@ -714,9 +740,9 @@ const Player = () => {
 
   const handlePlayPause = async () => {
     const next = !isPlaying;
-    const playbackTime = isYouTube ? currentSec : audioRef.current?.currentTime ?? currentSec;
+    const playbackTime = isYouTube ? currentSecRef.current : audioRef.current?.currentTime ?? currentSecRef.current;
 
-    setCurrentSec(playbackTime);
+    setPlaybackUi(playbackTime, totalDurationRef.current, true);
     setIsPlaying(next);
     if (!currentTrack?.isLocal) {
       await syncPlaybackState({ is_playing: next, current_time_seconds: playbackTime });
@@ -724,30 +750,31 @@ const Player = () => {
   };
 
   const handleNext = useCallback(() => {
-    setProgress(0); setCurrentSec(0); setTotalDuration(0);
+    resetPlaybackUi();
     const nextIdx = (currentTrackIndex + 1) % Math.max(queue.length, 1);
     setCurrentTrackIndex(nextIdx);
     if (!queue[nextIdx]?.isLocal) {
       syncPlaybackState({ current_track_index: nextIdx, current_time_seconds: 0, is_playing: true });
     }
-  }, [queue, currentTrackIndex, syncPlaybackState]);
+  }, [currentTrackIndex, queue, resetPlaybackUi, syncPlaybackState]);
 
   const handlePrev = useCallback(() => {
-    setProgress(0); setCurrentSec(0); setTotalDuration(0);
+    resetPlaybackUi();
     const prevIdx = (currentTrackIndex - 1 + Math.max(queue.length, 1)) % Math.max(queue.length, 1);
     setCurrentTrackIndex(prevIdx);
     if (!queue[prevIdx]?.isLocal) {
       syncPlaybackState({ current_track_index: prevIdx, current_time_seconds: 0, is_playing: true });
     }
-  }, [queue, currentTrackIndex, syncPlaybackState]);
+  }, [currentTrackIndex, queue, resetPlaybackUi, syncPlaybackState]);
 
   const handleSeek = (v: number[]) => {
     if (isYouTube && totalDuration) {
       const t = (v[0] / 100) * totalDuration;
-      setYtSeekTo(t); setProgress(v[0]); setCurrentSec(t);
+      setPlaybackUi(t, totalDuration, true);
     } else if (audioRef.current && currentTrack) {
       const t = (v[0] / 100) * audioRef.current.duration;
-      audioRef.current.currentTime = t; setProgress(v[0]); setCurrentSec(t);
+      audioRef.current.currentTime = t;
+      setPlaybackUi(t, audioRef.current.duration, true);
     }
   };
 
@@ -756,6 +783,7 @@ const Player = () => {
 
     if (isYouTube && totalDuration) {
       const t = (v[0] / 100) * totalDuration;
+      setYtSeekTo(t);
       await syncPlaybackState({ current_time_seconds: t });
       return;
     }
@@ -768,11 +796,12 @@ const Player = () => {
 
   /* ── YouTube callbacks ── */
   const handleYtTimeUpdate = useCallback((ct: number, dur: number) => {
-    setCurrentSec(ct); setTotalDuration(dur);
-    setProgress(dur ? (ct / dur) * 100 : 0);
-  }, []);
+    setPlaybackUi(ct, dur);
+  }, [setPlaybackUi]);
 
-  const handleYtReady = useCallback((dur: number) => { setTotalDuration(dur); }, []);
+  const handleYtReady = useCallback((dur: number) => {
+    setPlaybackUi(currentSecRef.current, dur, true);
+  }, [setPlaybackUi]);
 
   /* ── shared audio upload (cross-device) ── */
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1174,9 +1203,7 @@ const Player = () => {
                     key={track.dbId ?? `${track.id}-${idx}`}
                     onClick={() => {
                       setCurrentTrackIndex(idx);
-                      setProgress(0);
-                      setCurrentSec(0);
-                      setTotalDuration(0);
+                      resetPlaybackUi();
 
                       if (track.isLocal) {
                         setIsPlaying(true);
@@ -1231,9 +1258,9 @@ const Player = () => {
               <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary border border-card animate-pulse" />
             </div>
             <div>
-              <p className="text-xs font-medium">AI Auto-Sync · Real-time</p>
+              <p className="text-xs font-medium">Manual room sync</p>
               <p className="text-[10px] text-muted-foreground">
-                Room: {roomCode}{lastSyncAt ? ` · Updated ${lastSyncAt}` : ""}
+                Room: {roomCode}{lastSyncAt ? ` · Last sync ${lastSyncAt}` : ""}
               </p>
             </div>
           </div>

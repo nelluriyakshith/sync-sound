@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 interface YouTubeEmbedProps {
   videoId: string;
@@ -23,6 +23,12 @@ let apiReady = false;
 const readyCallbacks: (() => void)[] = [];
 
 const loadYouTubeAPI = (): Promise<void> => {
+  if (window.YT?.Player) {
+    apiLoaded = true;
+    apiReady = true;
+    return Promise.resolve();
+  }
+
   if (apiReady) return Promise.resolve();
   return new Promise((resolve) => {
     if (apiLoaded) {
@@ -68,7 +74,7 @@ const YouTubeEmbed = ({
         height: "100%",
         width: "100%",
         playerVars: {
-          autoplay: 1,
+          autoplay: 0,
           controls: 0,
           modestbranding: 1,
           rel: 0,
@@ -76,13 +82,18 @@ const YouTubeEmbed = ({
           iv_load_policy: 3,
           disablekb: 1,
           playsinline: 1,
+          origin: window.location.origin,
         },
         events: {
           onReady: (e: any) => {
             const dur = e.target.getDuration?.() || 0;
             onReady?.(dur);
+            if (seekTo != null && Math.abs((e.target.getCurrentTime?.() || 0) - seekTo) > 0.2) {
+              e.target.seekTo(seekTo, true);
+            }
             e.target.setVolume(isMuted ? 0 : volume);
             if (isPlaying) e.target.playVideo();
+            else e.target.pauseVideo();
 
             // Time update interval
             intervalRef.current = setInterval(() => {
@@ -125,6 +136,8 @@ const YouTubeEmbed = ({
   // Seek
   useEffect(() => {
     if (seekTo == null || !playerRef.current?.seekTo) return;
+    const currentTime = playerRef.current.getCurrentTime?.() || 0;
+    if (Math.abs(currentTime - seekTo) < 0.2) return;
     playerRef.current.seekTo(seekTo, true);
   }, [seekTo]);
 
